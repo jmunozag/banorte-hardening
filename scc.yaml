@@ -14,11 +14,11 @@
 
     - name: Listar SCC que NO cumplen con MustRunAsRange
       debug:
-        msg: "{{ item.metadata.name }} {{ item.runAsUser.type | default('undefined') }}"
+        msg: "{{ item.metadata.name }}"
       loop: "{{ sccs.resources }}"
       when: item.runAsUser.type | default('') != 'MustRunAsRange'
       register: salida
 
     - name: salida SCC
       debug: 
-        msg: "{{ salida.msg[0] }}"
+        msg: "{{ salida.msg }}"
