@@ -4,7 +4,7 @@
   gather_facts: no
   
   tasks:
-    - command: oc login -u admin -p OTQ3MzMx https://api.cluster-4sppc.dynamic.redhatworkshops.io:6443
+    - command: oc login -u admin -p OTQ3MzMx https://api.cluster-4sppc.dynamic.redhatworkshops.io:6443 --insecure-skip-tls-verify
     
     - name: Obtener todas las SCC
       kubernetes.core.k8s_info:
