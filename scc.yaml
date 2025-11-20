@@ -20,7 +20,11 @@
       register: salida
 
     - set_fact:
-        scc: "{{ salida.results | map(attribute='msg') | list }}"
+        scc: |
+          {{ salida.results
+          | selectattr('skipped', 'undefined')
+          | map(attribute='item.metadata.name')
+          | list }}
 
     - name: salida SCC
       debug: 
