@@ -2,8 +2,10 @@
 - name: Verificar runAsUser.type en SCC (PCI-DSS)
   hosts: localhost
   gather_facts: no
-
+  
   tasks:
+    - command: oc login -u admin -p OTQ3MzMx https://api.cluster-4sppc.dynamic.redhatworkshops.io:6443
+    
     - name: Obtener todas las SCC
       kubernetes.core.k8s_info:
         api_version: security.openshift.io/v1
