@@ -11,5 +11,9 @@
         api_version: security.openshift.io/v1
         kind: SecurityContextConstraints
       register: sccs
-    - debug:
-        msg: "{{ sccs }}"
+
+    - name: Listar SCC que NO cumplen con MustRunAsRange
+      debug:
+        msg: "SCC {{ item.metadata.name }} tiene runAsUser.type={{ item.runAsUser.type | default('undefined') }}"
+      loop: "{{ sccs.resources }}"
+      when: item.runAsUser.type | default('') != 'MustRunAsRange'
