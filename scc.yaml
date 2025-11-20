@@ -40,9 +40,12 @@
       set_fact:
         pods_con_scc_invalido: >
           {{ pods.resources
-          | selectattr('metadata.annotations."openshift.io/scc"','in', scc)
-          | list }}
-    
+             | selectattr("metadata.annotations", "defined")
+             | selectattr("metadata.annotations", "!=", None)
+             | selectattr("metadata.annotations", "contains", "openshift.io/scc")
+             | selectattr("metadata.annotations['openshift.io/scc']", "in", scc_list)
+             | list }}
+
     - name: Mostrar Pods que utilizan SCC inválidos
       debug:
         msg: "{{ item.metadata.namespace }}/{{ item.metadata.name }} usa el SCC {{ item.metadata.annotations['openshift.io/scc'] }}"
