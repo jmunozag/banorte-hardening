@@ -29,3 +29,21 @@
     - name: salida SCC
       debug: 
         msg: "{{ scc }}"
+
+    - name: Obtener Pods del cluster
+      k8s_info:
+        api_version: v1
+        kind: Pod
+      register: pods
+
+    - name: Filtrar Pods con SCC inválidos
+      set_fact:
+        pods_con_scc_invalido: >
+          {{ pods.resources
+          | selectattr('metadata.annotations."openshift.io/scc"','in', scc_list)
+          | list }}
+    
+    - name: Mostrar Pods que utilizan SCC inválidos
+      debug:
+        msg: "{{ item.metadata.namespace }}/{{ item.metadata.name }} usa el SCC {{ item.metadata.annotations['openshift.io/scc'] }}"
+      loop: "{{ pods_con_scc_invalido }}"
