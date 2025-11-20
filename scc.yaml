@@ -20,4 +20,5 @@
       register: salida
 
     - name: salida SCC
-        debug: "{{ salida }}"
+      debug: 
+        msg: "{{ salida }}"
