@@ -21,4 +21,4 @@
 
     - name: salida SCC
       debug: 
-        msg: "{{ salida }}"
+        msg: "{{ salida.msg }}"
