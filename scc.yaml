@@ -19,6 +19,9 @@
       when: item.runAsUser.type | default('') != 'MustRunAsRange'
       register: salida
 
+    - set_fact:
+        scc: "{{ salida.msg }}"
+
     - name: salida SCC
       debug: 
-        msg: "{{ salida.msg }}"
+        msg: "{{ scc }}"
