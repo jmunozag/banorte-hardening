@@ -20,7 +20,7 @@
       register: salida
 
     - set_fact:
-        scc: |
+        scc_list: |
           {{ salida.results
           | selectattr('skipped', 'undefined')
           | map(attribute='item.metadata.name')
@@ -28,7 +28,7 @@
 
     - name: salida SCC
       debug: 
-        msg: "{{ scc }}"
+        msg: "{{ scc_list }}"
 
     - name: Obtener Pods del cluster
       k8s_info:
