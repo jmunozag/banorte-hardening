@@ -36,17 +36,20 @@
         kind: Pod
       register: pods
 
-    - name: Filtrar Pods con SCC inválidos
-      set_fact:
-        pods_con_scc_invalido: >
-          {{ pods.resources
-             | selectattr("metadata.annotations", "defined")
-             | selectattr("metadata.annotations", "!=", None)
-             | selectattr("metadata.annotations", "contains", "openshift.io/scc")
-             | selectattr("metadata.annotations['openshift.io/scc']", "in", scc_list)
-             | list }}
+- set_fact:
+    pods_con_scc_invalido: []
 
-    - name: Mostrar Pods que utilizan SCC inválidos
-      debug:
-        msg: "{{ item.metadata.namespace }}/{{ item.metadata.name }} usa el SCC {{ item.metadata.annotations['openshift.io/scc'] }}"
-      loop: "{{ pods_con_scc_invalido }}"
+- name: Verificar SCC de cada pod
+  set_fact:
+    pods_con_scc_invalido: "{{ pods_con_scc_invalido + [ item ] }}"
+  loop: "{{ pods.resources }}"
+  when:
+    - item.metadata.annotations is defined
+    - item.metadata.annotations['openshift.io/scc'] is defined
+    - item.metadata.annotations['openshift.io/scc'] in scc_list
+
+
+- name: Pods que utilizan SCC inválidos
+  debug:
+    msg: "{{ item.metadata.namespace }}/{{ item.metadata.name }} usa el SCC {{ item.metadata.annotations['openshift.io/scc'] }}"
+  loop: "{{ pods_con_scc_invalido }}"
