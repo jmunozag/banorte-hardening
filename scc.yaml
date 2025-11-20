@@ -20,7 +20,7 @@
       register: salida
 
     - set_fact:
-        scc: "{{ salida.results | map(attribute='msg') }}"
+        scc: "{{ salida.results | map(attribute='msg') | list }}"
 
     - name: salida SCC
       debug: 
