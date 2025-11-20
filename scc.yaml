@@ -1,0 +1,13 @@
+---
+- name: Verificar runAsUser.type en SCC (PCI-DSS)
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+    - name: Obtener todas las SCC
+      kubernetes.core.k8s_info:
+        api_version: security.openshift.io/v1
+        kind: SecurityContextConstraints
+      register: sccs
+    - debug:
+        msg: "{{ sccs }}"
