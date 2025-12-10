@@ -1,0 +1,82 @@
+---
+# tasks file for compliance-cis-ocp
+- name: Login a OCP
+  ansible.builtin.shell: "{{ login_ocp }} --insecure-skip-tls-verify"
+
+- name: Crear directorio principal
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0775'
+    recurse: true
+  with_items:
+    - "{{ pwd_initial_path }}"
+    - "{{ pwd_initial_path }}/security-ocp-scan"
+    - "/tmp/reporte_html_compliance"
+
+- name: Copiar yamls para creacion pods de extraccion
+  ansible.builtin.copy:
+    src: "files/{{ item }}"
+    dest: "{{ pwd_initial_path }}"
+    mode: '0775'
+  with_items:
+    - ocp4-cis-scan.yaml
+    - scan-master.yaml
+    - scan-worker.yaml
+
+- name: Traspaso de script
+  ansible.builtin.template:
+    src: templates/script_compliance_ocp_cis.sh.j2
+    dest: "{{ pwd_initial_path }}/script_compliance_ocp_cis.sh"
+    mode: '0775'
+
+- name: Ejecucion script
+  ansible.builtin.script: "{{ pwd_initial_path }}/script_compliance_ocp_cis.sh"
+  args:
+    chdir: "{{ pwd_initial_path }}"
+
+- name: Buscar carpeta de reportes
+  ansible.builtin.find:
+    paths: "{{ pwd_initial_path }}/security-ocp-scan/"
+    file_type: directory
+    recurse: false
+  register: path_dir_reports
+
+- ansible.builtin.set_fact:
+    list_dir: "{{ path_dir_reports | json_query('files[*].path') }}"
+
+- name: Obtener reportes HTML
+  ansible.builtin.shell: find "{{ item }}" -type f -name "*.html"
+  loop: "{{ list_dir }}"
+  register: list_files_html
+
+- name: Combinar resultados
+  ansible.builtin.set_fact:
+    list_html: "{{ list_files_html.results | map(attribute='stdout_lines') | list | flatten }}"
+
+- name: Generando backup de archivos
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/tmp/reporte_html_compliance"
+    mode: '0775'
+  with_items:
+    - "{{ list_html }}"
+
+- name: Comprimir resultados para compartir via mail
+  community.general.archive:
+    path: "/tmp/reporte_html_compliance"
+    dest: "/tmp/reporte_html_compliance.zip"
+
+- name: Enviar email con archivo csv de vulnerabilidades
+  community.general.mail:
+    host: smtp.gmail.com
+    port: 587
+    username: '{{ user_mail }}'
+    password: '{{ password_mail }}'
+    to: '{{ receptor_mail }}'
+    subject: Archivo con vulnerabilidades
+    body: |
+      Se hace envio del archivo comprimido con la evaluacion de compliance:
+    attach:
+      - /tmp/reporte_html_compliance.zip
+  run_once: true

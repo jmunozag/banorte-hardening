@@ -1,0 +1,16 @@
+apiVersion: "v1"
+kind: Pod
+metadata:
+  name: extract-ocp4-cis-node-worker
+spec:
+  containers:
+    - name: extract-ocp4-cis-node-worker
+      image: registry.access.redhat.com/ubi8/ubi
+      command: ["sleep", "3000"]
+      volumeMounts:
+      - mountPath: "/ocp4-cis-node-worker-scan-results"
+        name: worker-scan-vol
+  volumes:
+    - name: worker-scan-vol
+      persistentVolumeClaim:
+        claimName: ocp4-cis-node-worker

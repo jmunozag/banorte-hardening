@@ -1,0 +1,6 @@
+---
+- name: Obtener vunerabilidades de quay por ambientes
+  hosts: localhost
+  gather_facts: true
+  roles:
+    - compliance-cis-ocp

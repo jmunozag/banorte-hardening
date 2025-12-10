@@ -1,0 +1,33 @@
+#SPDX-License-Identifier: MIT-0
+---
+#tasks file for nett_policy
+- name: Conectar a OCP
+  ansible.builtin.shell: "{{ ocp_token_access }}"
+
+- name: Modificando template con valores
+  ansible.builtin.template:
+    src: templates/dany-all-ingress-pod.yml.j2
+    dest: /tmp/dany-all-ingress-pod.yml
+  
+- name: Integrndo politica a ocp
+  ansible.builtin.shell: oc apply -f /tmp/dany-all-ingress-pod.yml
+
+- name: Obtener todas las NetworkPolicies del cluster
+  ansible.builtin.shell: oc get networkpolicy --all-namespaces --no-headers
+  register: net_policies_ocp
+
+- name: Formatear resultados en CSV
+  ansible.builtin.set_fact:
+    csv_lines: >
+      {{
+        ['namespace,name,pod_selector'] +
+        net_policies_ocp.stdout_lines |
+        map('regex_replace', '\s+', ',') |
+        list
+      }}
+
+- name: Guardar reporte en CSV
+  ansible.builtin.copy:
+    dest: "/home/kev/Documentos/ine_ansible/ine_net_policy/roles/nett_policy/files/report_network_policies.csv"
+    content: "{{ csv_lines | join('\n') }}"
+

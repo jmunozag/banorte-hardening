@@ -1,0 +1,3 @@
+---
+# vars file for compliance-cis-ocp
+pwd_initial_path: /tmp/security-ocp-scan-cis

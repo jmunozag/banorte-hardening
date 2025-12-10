@@ -1,0 +1,106 @@
+!/bin/bash
+
+###################################################
+# Variables
+
+CURRENT_DATE=`date +%B_%d_%Y`
+FECHA_PARA_RESPALDO=`date +%Y-%m-%d`
+PWD_INITIAL="{{ pwd_initial_path }}"
+
+###################################################
+
+mkdir 'security-ocp-scan/'$CURRENT_DATE'_scan'
+
+mkdir 'security-ocp-scan/'$CURRENT_DATE'_scan/workerscan'
+mkdir 'security-ocp-scan/'$CURRENT_DATE'_scan/masterscan'
+mkdir 'security-ocp-scan/'$CURRENT_DATE'_scan/cisscan'
+
+cd 'security-ocp-scan/'$CURRENT_DATE'_scan'
+
+# validación si esta logueado el usuario
+NODES_COUNT=`oc get nodes | wc -l`
+if [ $NODES_COUNT > 0 ]; then
+      echo "usuario logueado..."
+else
+    echo "requiere login en OCP."
+fi
+
+# anotar los escaneos para que se vuelvan a ejecutar
+oc -n openshift-compliance annotate compliancescans/ocp4-cis-node-master compliance.openshift.io/rescan=
+oc -n openshift-compliance annotate compliancescans/ocp4-cis-node-worker compliance.openshift.io/rescan=
+oc -n openshift-compliance annotate compliancescans/ocp4-cis compliance.openshift.io/rescan=
+
+# esperar hasta que los escaneos estén en estado 'Done'
+while true; do
+    if [ $(oc -n openshift-compliance get compliancescans --no-headers | grep -c 'DONE') -eq 3 ]; then
+        echo "compliances DONES..."
+        break
+    else
+        echo "creating compliances...waiting..."
+        sleep 10
+    fi
+done
+
+# crear los objetos
+
+oc create -n openshift-compliance -f $PWD_INITIAL'/scan-worker.yaml'
+oc create -n openshift-compliance -f $PWD_INITIAL'/scan-master.yaml'
+oc create -n openshift-compliance -f $PWD_INITIAL'/ocp4-cis-scan.yaml'
+
+echo "PODs de compliance creados......"
+sleep 2
+
+# esperar hasta que los pods estén en estado 'Running'
+while true; do
+    if [ $(oc get pods -n openshift-compliance | grep 'extract' | grep 'Running' | wc -l) -eq 3 ]; then
+        echo "PODS Running..."
+        break
+    else
+        echo "PODS status Not Running...waiting..."
+        sleep 10
+    fi
+done
+
+# copiar los resultados de los escaneos
+oc cp extract-ocp4-cis:/ocp4-cis-scan-results -n openshift-compliance cisscan/
+oc cp extract-ocp4-cis-node-master:/ocp4-cis-node-master-scan-results -n openshift-compliance masterscan/
+oc cp extract-ocp4-cis-node-worker:/ocp4-cis-node-worker-scan-results -n openshift-compliance workerscan/
+
+# eliminar los pods
+oc delete pod extract-ocp4-cis -n openshift-compliance --force
+oc delete pod extract-ocp4-cis-node-master -n openshift-compliance --force
+oc delete pod extract-ocp4-cis-node-worker -n openshift-compliance --force
+
+# borrando archivos vacios y sin uso
+rm 0
+rm -r cisscan/lost+found
+rm -r masterscan/lost+found
+rm -r workerscan/lost+found
+
+echo "cierre de obtención de información de OCP"
+
+# extrayendo archivos bzip2 a xml
+echo "extrayendo archivos bzip2 a xml"
+
+for dir in *; do
+    ls "$dir"
+
+    for dirint in "$dir"/*; do
+            echo "carpeta $dirint"
+            #ls "$dirint"
+        for file_path in "$dirint"/*; do
+            if [ -f "$file_path" ]; then
+                echo "archivo $file_path"
+                file_name="${file_path##*/}"
+                file_name_no_extension="${file_name%.bzip2}"
+                echo $file_name_no_extension
+
+                # convirtiendo archivo a xml
+                bunzip2 -c "$file_path" > "$dirint/${file_name_no_extension%.bzip2}"
+
+                # creando archivos html
+                oscap xccdf generate report --output $PWD_INITIAL"/security-ocp-scan/"$CURRENT_DATE"_scan/"$dirint"/"$file_name_no_extension".html" $PWD_INITIAL"/security-ocp-scan/"$CURRENT_DATE"_scan/"$dirint"/"$file_name_no_extension
+            fi
+        done
+    done
+done
