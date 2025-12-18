@@ -1,1 +1,46 @@
+---
+- name: Verificar si es posible eliminar kubeadmin
+  hosts: localhost
+  gather_facts: no
+  vars:
+    kubeadmin_secret: "kubeadmin"
+    kube_system_ns: "kube-system"
 
+  tasks:
+    
+    - command: oc login --token=sha256~Vzx-JOKYuhDm47zE8bqD6gG4LZy0F_TS5EUgpXuAbSk --server=https://api.cluster-g9bkz.g9bkz.sandbox3232.opentlc.com:6443      
+    - name: Obtener configuración de OAuth del cluster
+      command: oc get oauth cluster -o json
+      register: oauth_config
+      failed_when: oauth_config.rc != 0
+
+    - name: Parsear identity providers configurados
+      set_fact:
+        identity_providers: "{{ (oauth_config.stdout | from_json).spec.identityProviders | default([]) }}"
+
+    - name: Verificar si existen otros Identity Providers
+      set_fact:
+        kubeadmin_removable: "{{ identity_providers | length > 0 }}"
+
+    - name: Informar si es posible eliminar kubeadmin
+      debug:
+        msg: >-
+          {% if kubeadmin_removable %}
+          SI es posible eliminar el usuario kubeadmin: existen otros Identity Providers configurados en el clúster.
+          {% else %}
+          NO es posible eliminar el usuario kubeadmin: no existen otros Identity Providers configurados en el clúster.
+          {% endif %}
+
+    - name: Verificar si el secreto kubeadmin existe
+      command: oc get secret {{ kubeadmin_secret }} -n {{ kube_system_ns }}
+      register: secret_status
+      failed_when: false
+
+    - name: Informar estado del secreto kubeadmin
+      debug:
+        msg: >-
+          {% if secret_status.rc == 0 %}
+          El secreto kubeadmin existe actualmente en el clúster.
+          {% else %}
+          El secreto kubeadmin NO existe en el clúster.
+          {% endif %}
