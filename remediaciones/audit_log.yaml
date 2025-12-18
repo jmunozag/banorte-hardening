@@ -3,10 +3,16 @@
   hosts: localhost
   gather_facts: no
 
-
   tasks:
 
-    - command: oc login --token=sha256~Vzx-JOKYuhDm47zE8bqD6gG4LZy0F_TS5EUgpXuAbSk --server=https://api.cluster-g9bkz.g9bkz.sandbox3232.opentlc.com:6443  --insecure-skip-tls-verify
+    - name: Inicializar variables
+      set_fact:
+        clf_exists: false
+        audit_configured: false
+        pods_ok: false
+        clf_name: ""
+        node_count: 0
+        clf_pod_count: 0
 
     - name: Obtener ClusterLogForwarder existente
       command: oc get clusterlogforwarder -n openshift-logging -o json
@@ -17,8 +23,8 @@
       set_fact:
         clf_name: >-
           {{
-            (clf_list.stdout | from_json).items[0].metadata.name
-            if (clf_list.rc == 0 and (clf_list.stdout | from_json).items | length > 0)
+            (clf_list.stdout | from_json)['items'][0]['metadata']['name']
+            if (clf_list.rc == 0 and (clf_list.stdout | from_json)['items'] | length > 0)
             else ''
           }}
 
@@ -31,14 +37,14 @@
         audit_configured: >-
           {{
             (
-              (clf_list.stdout | from_json).items[0].spec.inputs | default([])
+              (clf_list.stdout | from_json)['items'][0]['spec']['inputs'] | default([])
               | selectattr('type', 'equalto', 'audit')
               | list
               | length > 0
             )
             or
             (
-              (clf_list.stdout | from_json).items[0].spec.pipelines | default([])
+              (clf_list.stdout | from_json)['items'][0]['spec']['pipelines'] | default([])
               | map(attribute='inputRefs')
               | flatten
               | select('equalto', 'audit')
@@ -55,7 +61,7 @@
 
     - name: Definir cantidad de nodos
       set_fact:
-        node_count: "{{ (nodes_result.stdout | from_json).items | length }}"
+        node_count: "{{ (nodes_result.stdout | from_json)['items'] | length }}"
       when: nodes_result.rc == 0
 
     - name: Obtener DaemonSet collector asociado al CLF
@@ -67,8 +73,8 @@
       set_fact:
         clf_pod_count: >-
           {{
-            (ds_result.stdout | from_json).items[0].status.numberReady
-            if (ds_result.rc == 0 and (ds_result.stdout | from_json).items | length > 0)
+            (ds_result.stdout | from_json)['items'][0]['status']['numberReady']
+            if (ds_result.rc == 0 and (ds_result.stdout | from_json)['items'] | length > 0)
             else 0
           }}
 
