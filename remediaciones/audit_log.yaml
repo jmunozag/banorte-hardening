@@ -1,0 +1,96 @@
+---
+- name: Revisión avanzada de ClusterLogForwarder
+  hosts: localhost
+  gather_facts: no
+
+  vars:
+    logging_ns: "openshift-logging"
+
+  tasks:
+
+    - command: oc login --token=sha256~Vzx-JOKYuhDm47zE8bqD6gG4LZy0F_TS5EUgpXuAbSk --server=https://api.cluster-g9bkz.g9bkz.sandbox3232.opentlc.com:6443  --insecure-skip-tls-verify
+
+    - name: Obtener ClusterLogForwarder existente
+      command: oc get clusterlogforwarder -n {{ logging_ns }} -o json
+      register: clf_list
+      failed_when: false
+
+    - name: Determinar nombre del CLF
+      set_fact:
+        clf_name: >-
+          {{
+            (clf_list.stdout | from_json).items[0].metadata.name
+            if (clf_list.rc == 0 and (clf_list.stdout | from_json).items | length > 0)
+            else ''
+          }}
+
+    - name: Marcar existencia del CLF
+      set_fact:
+        clf_exists: "{{ clf_name != '' }}"
+
+    - name: Validar configuración de AUDIT
+      set_fact:
+        audit_configured: >-
+          {{
+            (
+              (clf_list.stdout | from_json).items[0].spec.inputs | default([])
+              | selectattr('type', 'equalto', 'audit')
+              | list
+              | length > 0
+            )
+            or
+            (
+              (clf_list.stdout | from_json).items[0].spec.pipelines | default([])
+              | map(attribute='inputRefs')
+              | flatten
+              | select('equalto', 'audit')
+              | list
+              | length > 0
+            )
+          }}
+      when: clf_exists
+
+    - name: Obtener cantidad de nodos del cluster
+      command: oc get nodes -o json
+      register: nodes_result
+      failed_when: false
+
+    - name: Definir cantidad de nodos
+      set_fact:
+        node_count: "{{ (nodes_result.stdout | from_json).items | length }}"
+      when: nodes_result.rc == 0
+
+    - name: Obtener DaemonSet collector asociado al CLF
+      command: oc get daemonset -n {{ logging_ns }} -l component=collector -o json
+      register: ds_result
+      failed_when: false
+
+    - name: Obtener cantidad de pods del CLF (collector)
+      set_fact:
+        clf_pod_count: >-
+          {{
+            (ds_result.stdout | from_json).items[0].status.numberReady
+            if (ds_result.rc == 0 and (ds_result.stdout | from_json).items | length > 0)
+            else 0
+          }}
+
+    - name: Validar pods vs nodos
+      set_fact:
+        pods_ok: "{{ clf_pod_count | int == node_count | int }}"
+
+    - name: Definir resultado final
+      set_fact:
+        resultado_final: >-
+          {% if not clf_exists %}
+          CLF NO EXISTE
+          {% elif clf_exists and not audit_configured %}
+          CLF {{ clf_name }} EXISTE - AUDIT NO CONFIGURADO
+          {% elif clf_exists and audit_configured and not pods_ok %}
+          CLF {{ clf_name }} EXISTE - AUDIT CONFIGURADO - PODS {{ clf_pod_count }}/{{ node_count }} (INCORRECTO)
+          {% else %}
+          CLF {{ clf_name }} EXISTE - AUDIT CONFIGURADO - PODS {{ clf_pod_count }}/{{ node_count }} (CORRECTO)
+          {% endif %}
+
+    - name: Mostrar resultado final
+      debug:
+        msg: "{{ resultado_final }}"
