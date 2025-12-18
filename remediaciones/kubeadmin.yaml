@@ -8,7 +8,8 @@
 
   tasks:
     
-    - command: oc login --token=sha256~Vzx-JOKYuhDm47zE8bqD6gG4LZy0F_TS5EUgpXuAbSk --server=https://api.cluster-g9bkz.g9bkz.sandbox3232.opentlc.com:6443      
+    - command: oc login --token=sha256~Vzx-JOKYuhDm47zE8bqD6gG4LZy0F_TS5EUgpXuAbSk --server=https://api.cluster-g9bkz.g9bkz.sandbox3232.opentlc.com:6443 --insecure-skip-tls-verify
+    
     - name: Obtener configuración de OAuth del cluster
       command: oc get oauth cluster -o json
       register: oauth_config
