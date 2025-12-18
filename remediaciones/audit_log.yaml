@@ -3,15 +3,13 @@
   hosts: localhost
   gather_facts: no
 
-  vars:
-    logging_ns: "openshift-logging"
 
   tasks:
 
     - command: oc login --token=sha256~Vzx-JOKYuhDm47zE8bqD6gG4LZy0F_TS5EUgpXuAbSk --server=https://api.cluster-g9bkz.g9bkz.sandbox3232.opentlc.com:6443  --insecure-skip-tls-verify
 
     - name: Obtener ClusterLogForwarder existente
-      command: oc get clusterlogforwarder -n {{ logging_ns }} -o json
+      command: oc get clusterlogforwarder -n openshift-logging -o json
       register: clf_list
       failed_when: false
 
@@ -61,7 +59,7 @@
       when: nodes_result.rc == 0
 
     - name: Obtener DaemonSet collector asociado al CLF
-      command: oc get daemonset -n {{ logging_ns }} -l component=collector -o json
+      command: oc get daemonset -n openshift-logging -l component=collector -o json
       register: ds_result
       failed_when: false
 
