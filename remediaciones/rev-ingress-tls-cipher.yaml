@@ -32,6 +32,5 @@
       debug:
         msg: |
           CLUSTER: {{ inventory_hostname }}
-          OC CONTEXT: {{ oc_context }}
           TLS CIPHERS CONFIGURADOS:
           {{ tls_ciphers }}
