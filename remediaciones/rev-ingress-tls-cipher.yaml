@@ -1,0 +1,37 @@
+---
+- name: Mostrar TLS configurados en Ingress Controller
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    ingress_ns: "openshift-ingress-operator"
+    ingress_name: "default"
+
+  tasks:
+
+    - command: oc login --token=sha256~a7NNKc8Nu_eEFexkQ0TMZRsg2k7wCgs8f6LRbS4l4s0 --server=https://api.cluster-g9bkz.g9bkz.sandbox3232.opentlc.com:6443 --insecure-skip-tls-verify
+
+    - name: Obtener Ingress Controller
+      command: >
+        oc get ingresscontroller {{ ingress_name }}
+        -n {{ ingress_ns }}
+        -o json
+      register: ingress_result
+      failed_when: false
+
+    - name: Extraer ciphers configurados
+      set_fact:
+        tls_ciphers: >-
+          {{
+            (ingress_result.stdout | from_json)['status']['tlsProfile']['ciphers']
+            | default([])
+          }}
+
+    - name: Mostrar TLS configurados del cluster
+      debug:
+        msg: |
+          CLUSTER: {{ inventory_hostname }}
+          OC CONTEXT: {{ oc_context }}
+          TLS CIPHERS CONFIGURADOS:
+          {{ tls_ciphers }}
