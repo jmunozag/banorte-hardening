@@ -12,6 +12,8 @@
 
   tasks:
 
+    - command: oc login --token=sha256~P8V7hWZ3Q7xsWYgdALkOtZnOXhhn2Pr8smDETiUsrig --server=https://api.cluster-g9bkz.g9bkz.sandbox3232.opentlc.com:6443 --insecure-skip-tls-verify
+
     # =========================================================
     # KUBEADMIN
     # =========================================================
