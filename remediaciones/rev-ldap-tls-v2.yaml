@@ -1,0 +1,133 @@
+---
+- name: Revisión y remediación LDAP Identity Providers (TLS)
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    mode: inform            # inform | enforce
+    oauth_ns: openshift-config
+    ldap_ca_name: ldap-ca
+    ldap_ca_file: files/ldap-ca.crt
+
+  tasks:
+
+    - command: oc login --token=sha256~P8V7hWZ3Q7xsWYgdALkOtZnOXhhn2Pr8smDETiUsrig --server=https://api.cluster-g9bkz.g9bkz.sandbox3232.opentlc.com:6443 --insecure-skip-tls-verify
+
+    - name: Obtener configuración OAuth del cluster
+      command: oc get oauth cluster -o json
+      register: oauth_result
+      failed_when: false
+
+    - name: Extraer Identity Providers
+      set_fact:
+        identity_providers: "{{ (oauth_result.stdout | from_json)['spec']['identityProviders'] | default([]) }}"
+
+    - name: Filtrar Identity Providers de tipo LDAP
+      set_fact:
+        ldap_idps: "{{ identity_providers | selectattr('type', 'equalto', 'LDAP') | list }}"
+
+    - name: Evaluar estado LDAP
+      set_fact:
+        ldap_status: >-
+          {{
+            ldap_idps | map(
+              'combine',
+              {
+                'insecure_value': (item.ldap.insecure | default(false))
+              }
+            )
+          }}
+      vars:
+        item: "{{ item }}"
+      loop: "{{ ldap_idps }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: ldap_idps | length > 0
+
+    - name: Mostrar estado (inform)
+      debug:
+        msg: |
+          IDP LDAP: {{ item.name }}
+          INSECURE: {{ item.ldap.insecure | default(false) }}
+      loop: "{{ ldap_idps }}"
+      when:
+        - mode == "inform"
+        - ldap_idps | length > 0
+
+    - name: Informar ausencia de LDAP
+      debug:
+        msg: "NO EXISTEN IDENTITY PROVIDERS LDAP CONFIGURADOS"
+      when:
+        - mode == "inform"
+        - ldap_idps | length == 0
+
+    # =========================
+    # ENFORCE
+    # =========================
+
+    - name: Validar que exista archivo de CA
+      stat:
+        path: "{{ ldap_ca_file }}"
+      register: ca_file
+      when: mode == "enforce"
+
+    - name: Falla si no existe CA para enforce
+      fail:
+        msg: "Modo enforce requiere archivo de CA válido: {{ ldap_ca_file }}"
+      when:
+        - mode == "enforce"
+        - not ca_file.stat.exists
+
+    - name: Crear o actualizar ConfigMap con CA LDAP
+      command: >
+        oc create configmap {{ ldap_ca_name }}
+        --from-file=ca.crt={{ ldap_ca_file }}
+        -n {{ oauth_ns }}
+        --dry-run=client -o yaml
+      register: cm_yaml
+      when: mode == "enforce"
+
+    - name: Aplicar ConfigMap CA LDAP
+      command: oc apply -f -
+      args:
+        stdin: "{{ cm_yaml.stdout }}"
+      when: mode == "enforce"
+
+    - name: Construir nueva configuración OAuth con LDAP seguro
+      set_fact:
+        oauth_secure: >-
+          {{
+            (oauth_result.stdout | from_json)['spec']['identityProviders']
+            | map('combine', {
+                'ldap': (
+                  item.ldap | combine({
+                    'insecure': false,
+                    'ca': { 'name': ldap_ca_name }
+                  })
+                  if item.type == 'LDAP'
+                  else item.ldap
+                )
+              })
+            | list
+          }}
+      vars:
+        item: "{{ item }}"
+      loop: "{{ identity_providers }}"
+      when: mode == "enforce"
+
+    - name: Aplicar configuración OAuth segura
+      command: >
+        oc patch oauth cluster
+        --type merge
+        -p '{{ {"spec": {"identityProviders": oauth_secure}} | to_json }}'
+      when:
+        - mode == "enforce"
+        - ldap_idps | length > 0
+
+    - name: Confirmar remediación
+      debug:
+        msg: "LDAP IDP actualizado para usar TLS seguro (insecure=false, CA configurada)"
+      when:
+        - mode == "enforce"
+        - ldap_idps | length > 0
