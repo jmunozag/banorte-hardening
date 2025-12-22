@@ -219,7 +219,7 @@
         to: "{{ mail_to }}"
         subject: "Reporte Seguridad OpenShift"
         body: "{{ lookup('file', report_dir + '/' + report_name + '.txt') }}"
-      when: send_mail == 'true'
+      when: send_mail
 
     - name: Enviar reporte por webhook
       uri:
