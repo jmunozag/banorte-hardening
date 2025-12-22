@@ -1,0 +1,233 @@
+---
+- name: Revisión informativa de controles de seguridad OpenShift y generación de reporte
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    kubeadmin_secret: kubeadmin
+    kube_system_ns: kube-system
+    logging_ns: openshift-logging
+    ingress_ns: openshift-ingress-operator
+
+    report_dir: /tmp/ocp-reports
+    report_name: "reporte-ocp-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+
+    send_mail: true
+    mail_to: jmunozag@redhat.com
+    mail_from: botkev838@gmail.com
+    mail_password: 'xukt zkki wrwx jiyp'
+    smtp_host: smtp.gmail.com
+
+    send_webhook: false
+    webhook_url: https://webhook.empresa.cl/ocp/report
+
+  tasks:
+
+    # =========================================================
+    # KUBEADMIN
+    # =========================================================
+
+    - name: Verificar existencia del secreto kubeadmin
+      command: oc get secret {{ kubeadmin_secret }} -n {{ kube_system_ns }}
+      register: kubeadmin_cmd
+      failed_when: false
+
+    - name: Obtener configuración OAuth
+      command: oc get oauth cluster -o json
+      register: oauth_result
+      failed_when: false
+
+    - name: Extraer Identity Providers
+      set_fact:
+        identity_providers: "{{ (oauth_result.stdout | from_json)['spec']['identityProviders'] | default([]) }}"
+
+    - name: Definir resultado kubeadmin
+      set_fact:
+        kubeadmin_resultado: >-
+          {% if kubeadmin_cmd.rc != 0 %}
+          KUBEADMIN NO EXISTE - NO ES NECESARIO ELIMINAR
+          {% elif identity_providers | length == 0 %}
+          KUBEADMIN EXISTE - IDENTITY PROVIDER NO - NO SE PUEDE ELIMINAR
+          {% else %}
+          KUBEADMIN EXISTE - IDENTITY PROVIDER SI - ES POSIBLE ELIMINAR
+          {% endif %}
+
+    # =========================================================
+    # CLUSTER LOG FORWARDER
+    # =========================================================
+
+    - name: Obtener ClusterLogForwarder
+      command: oc get clusterlogforwarder -n {{ logging_ns }} -o json
+      register: clf_cmd
+      failed_when: false
+
+    - name: Definir CLF existente
+      set_fact:
+        clf_items: "{{ (clf_cmd.stdout | from_json)['items'] | default([]) }}"
+        clf_exists: "{{ clf_cmd.rc == 0 and ((clf_cmd.stdout | from_json)['items'] | length > 0) }}"
+
+    - name: Extraer nombre CLF
+      set_fact:
+        clf_name: "{{ clf_items[0].metadata.name }}"
+      when: clf_exists
+
+    - name: Validar configuración AUDIT
+      set_fact:
+        audit_configured: >-
+          {{
+            (
+              clf_items[0].spec.inputs | default([])
+              | selectattr('type', 'equalto', 'audit')
+              | list | length > 0
+            )
+            or
+            (
+              clf_items[0].spec.pipelines | default([])
+              | map(attribute='inputRefs')
+              | flatten
+              | select('equalto', 'audit')
+              | list | length > 0
+            )
+          }}
+      when: clf_exists
+
+    - name: Obtener nodos del cluster
+      command: oc get nodes -o json
+      register: nodes_cmd
+      failed_when: false
+
+    - name: Definir cantidad de nodos
+      set_fact:
+        node_count: "{{ (nodes_cmd.stdout | from_json)['items'] | length }}"
+      when: nodes_cmd.rc == 0
+
+    - name: Obtener DaemonSet collector
+      command: oc get daemonset -n {{ logging_ns }} -l component=collector -o json
+      register: ds_cmd
+      failed_when: false
+
+    - name: Definir cantidad de pods collector
+      set_fact:
+        clf_pod_count: "{{ (ds_cmd.stdout | from_json)['items'][0]['status']['numberReady'] | default(0) }}"
+      when: ds_cmd.rc == 0 and ((ds_cmd.stdout | from_json)['items'] | length > 0)
+
+    - name: Definir resultado CLF
+      set_fact:
+        clf_resultado: >-
+          {% if not clf_exists %}
+          CLF NO EXISTE
+          {% elif not audit_configured %}
+          CLF {{ clf_name }} EXISTE - AUDIT NO CONFIGURADO
+          {% elif clf_pod_count != node_count %}
+          CLF {{ clf_name }} EXISTE - AUDIT CONFIGURADO - PODS {{ clf_pod_count }}/{{ node_count }} (INCORRECTO)
+          {% else %}
+          CLF {{ clf_name }} EXISTE - AUDIT CONFIGURADO - PODS {{ clf_pod_count }}/{{ node_count }} (CORRECTO)
+          {% endif %}
+
+    # =========================================================
+    # INGRESS CONTROLLER TLS
+    # =========================================================
+
+    - name: Obtener TLS ciphers del Ingress Controller
+      command: oc get ingresscontrollers/default -n {{ ingress_ns }} -o jsonpath='{.status.tlsProfile.ciphers}'
+      register: ingress_tls_cmd
+      failed_when: false
+
+    - name: Definir resultado Ingress TLS
+      set_fact:
+        ingress_resultado: >-
+          TLS CIPHERS CONFIGURADOS:
+          {{ ingress_tls_cmd.stdout if ingress_tls_cmd.stdout != "" else "NO DEFINIDOS" }}
+
+    # =========================================================
+    # LDAP IDENTITY PROVIDERS TLS
+    # =========================================================
+
+    - name: Filtrar Identity Providers LDAP
+      set_fact:
+        ldap_idps: "{{ identity_providers | selectattr('type', 'equalto', 'LDAP') | list }}"
+
+    - name: Definir resultado LDAP
+      set_fact:
+        ldap_resultado: >-
+          {% if ldap_idps | length == 0 %}
+          NO EXISTEN IDENTITY PROVIDERS LDAP CONFIGURADOS
+          {% else %}
+          {% for idp in ldap_idps %}
+          IDP LDAP: {{ idp.name }} - INSECURE: {{ idp.ldap.insecure | default(false) }}
+          {% endfor %}
+          {% endif %}
+
+    # =========================================================
+    # REPORTE
+    # =========================================================
+
+    - name: Crear directorio de reportes
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Construir estructura del reporte
+      set_fact:
+        report:
+          timestamp: "{{ lookup('pipe', 'date --iso-8601=seconds') }}"
+          kubeadmin: "{{ kubeadmin_resultado }}"
+          clusterlogforwarder: "{{ clf_resultado }}"
+          ingress_tls: "{{ ingress_resultado }}"
+          ldap_tls: "{{ ldap_resultado }}"
+
+    - name: Generar reporte en texto
+      copy:
+        dest: "{{ report_dir }}/{{ report_name }}.txt"
+        content: |
+          REPORTE DE CONTROLES DE SEGURIDAD OCP
+          Fecha: {{ report.timestamp }}
+
+          ---------------------------------
+          KUBEADMIN
+          {{ report.kubeadmin }}
+
+          ---------------------------------
+          CLUSTER LOG FORWARDER
+          {{ report.clusterlogforwarder }}
+
+          ---------------------------------
+          INGRESS CONTROLLER TLS
+          {{ report.ingress_tls }}
+
+          ---------------------------------
+          LDAP IDENTITY PROVIDERS TLS
+          {{ report.ldap_tls }}
+
+    - name: Generar reporte en JSON
+      copy:
+        dest: "{{ report_dir }}/{{ report_name }}.json"
+        content: "{{ report | to_nice_json }}"
+
+    # =========================================================
+    # ENVÍO
+    # =========================================================
+
+    - name: Enviar reporte por correo
+      mail:
+        host: "{{ smtp_host }}"
+        username: "{{ mail_from }}"
+        password: "{{ mail_password }}"
+        port: 587
+        to: "{{ mail_to }}"
+        subject: "Reporte Seguridad OpenShift"
+        body: "{{ lookup('file', report_dir + '/' + report_name + '.txt') }}"
+      when: send_mail
+
+    - name: Enviar reporte por webhook
+      uri:
+        url: "{{ webhook_url }}"
+        method: POST
+        headers:
+          Content-Type: application/json
+        body: "{{ report }}"
+        body_format: json
+        status_code: [200, 201, 202]
+      when: send_webhook
