@@ -1,0 +1,167 @@
+---
+- name: Revisión informativa de controles de seguridad OpenShift
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    kubeadmin_secret: kubeadmin
+    kube_system_ns: kube-system
+    logging_ns: openshift-logging
+    ingress_ns: openshift-ingress-operator
+
+  tasks:
+
+    # =========================================================
+    # KUBEADMIN
+    # =========================================================
+
+    - name: Verificar existencia del secreto kubeadmin
+      command: oc get secret {{ kubeadmin_secret }} -n {{ kube_system_ns }}
+      register: kubeadmin_result
+      failed_when: false
+
+    - name: Obtener Identity Providers configurados
+      command: oc get oauth cluster -o json
+      register: oauth_result
+      failed_when: false
+
+    - name: Extraer Identity Providers
+      set_fact:
+        identity_providers: "{{ (oauth_result.stdout | from_json)['spec']['identityProviders'] | default([]) }}"
+
+    - name: Definir resultado kubeadmin
+      set_fact:
+        kubeadmin_resultado: >-
+          {% if kubeadmin_result.rc != 0 %}
+          KUBEADMIN NO EXISTE - NO ES NECESARIO ELIMINAR
+          {% elif identity_providers | length == 0 %}
+          KUBEADMIN EXISTE - IDENTITY PROVIDER NO - NO SE PUEDE ELIMINAR
+          {% else %}
+          KUBEADMIN EXISTE - IDENTITY PROVIDER SI - ES POSIBLE ELIMINAR
+          {% endif %}
+
+    # =========================================================
+    # CLUSTER LOG FORWARDER
+    # =========================================================
+
+    - name: Obtener ClusterLogForwarder
+      command: oc get clusterlogforwarder -n {{ logging_ns }} -o json
+      register: clf_result
+      failed_when: false
+
+    - name: Definir CLF existente
+      set_fact:
+        clf_items: "{{ (clf_result.stdout | from_json)['items'] | default([]) }}"
+        clf_exists: "{{ clf_result.rc == 0 and ((clf_result.stdout | from_json)['items'] | length > 0) }}"
+
+    - name: Extraer nombre CLF
+      set_fact:
+        clf_name: "{{ clf_items[0].metadata.name }}"
+      when: clf_exists
+
+    - name: Validar configuración AUDIT
+      set_fact:
+        audit_configured: >-
+          {{
+            (
+              clf_items[0].spec.inputs | default([])
+              | selectattr('type', 'equalto', 'audit')
+              | list
+              | length > 0
+            )
+            or
+            (
+              clf_items[0].spec.pipelines | default([])
+              | map(attribute='inputRefs')
+              | flatten
+              | select('equalto', 'audit')
+              | list
+              | length > 0
+            )
+          }}
+      when: clf_exists
+
+    - name: Obtener cantidad de nodos
+      command: oc get nodes -o json
+      register: nodes_result
+      failed_when: false
+
+    - name: Definir cantidad de nodos
+      set_fact:
+        node_count: "{{ (nodes_result.stdout | from_json)['items'] | length }}"
+      when: nodes_result.rc == 0
+
+    - name: Obtener DaemonSet collector
+      command: oc get daemonset -n {{ logging_ns }} -l component=collector -o json
+      register: ds_result
+      failed_when: false
+
+    - name: Definir cantidad de pods collector
+      set_fact:
+        clf_pod_count: "{{ (ds_result.stdout | from_json)['items'][0]['status']['numberReady'] | default(0) }}"
+      when: ds_result.rc == 0 and ((ds_result.stdout | from_json)['items'] | length > 0)
+
+    - name: Definir resultado CLF
+      set_fact:
+        clf_resultado: >-
+          {% if not clf_exists %}
+          CLF NO EXISTE
+          {% elif not audit_configured %}
+          CLF {{ clf_name }} EXISTE - AUDIT NO CONFIGURADO
+          {% elif clf_pod_count != node_count %}
+          CLF {{ clf_name }} EXISTE - AUDIT CONFIGURADO - PODS {{ clf_pod_count }}/{{ node_count }} (INCORRECTO)
+          {% else %}
+          CLF {{ clf_name }} EXISTE - AUDIT CONFIGURADO - PODS {{ clf_pod_count }}/{{ node_count }} (CORRECTO)
+          {% endif %}
+
+    # =========================================================
+    # INGRESS TLS
+    # =========================================================
+
+    - name: Obtener TLS ciphers del Ingress Controller
+      command: oc get ingresscontrollers/default -n {{ ingress_ns }} -o jsonpath='{.status.tlsProfile.ciphers}'
+      register: ingress_tls
+      failed_when: false
+
+    - name: Definir resultado Ingress TLS
+      set_fact:
+        ingress_resultado: >-
+          TLS CIPHERS CONFIGURADOS EN INGRESS:
+          {{ ingress_tls.stdout if ingress_tls.stdout != "" else "NO DEFINIDOS" }}
+
+    # =========================================================
+    # LDAP IDP TLS
+    # =========================================================
+
+    - name: Filtrar LDAP Identity Providers
+      set_fact:
+        ldap_idps: "{{ identity_providers | selectattr('type', 'equalto', 'LDAP') | list }}"
+
+    - name: Definir resultado LDAP
+      set_fact:
+        ldap_resultado: >-
+          {% if ldap_idps | length == 0 %}
+          NO EXISTEN IDENTITY PROVIDERS LDAP CONFIGURADOS
+          {% else %}
+          {% for idp in ldap_idps %}
+          IDP LDAP: {{ idp.name }} - INSECURE: {{ idp.ldap.insecure | default(false) }}
+          {% endfor %}
+          {% endif %}
+
+    # =========================================================
+    # SALIDA FINAL
+    # =========================================================
+
+    - name: Mostrar resumen final
+      debug:
+        msg: |
+          ===== RESUMEN DE CONTROLES =====
+
+          {{ kubeadmin_resultado }}
+
+          {{ clf_resultado }}
+
+          {{ ingress_resultado }}
+
+          {{ ldap_resultado }}
