@@ -1,0 +1,44 @@
+---
+- name: Revisión LDAP Identity Providers (TLS)
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  tasks:
+
+    - name: Obtener configuración OAuth del cluster
+      command: oc get oauth cluster -o json
+      register: oauth_result
+      failed_when: false
+
+    - name: Extraer Identity Providers
+      set_fact:
+        identity_providers: >-
+          {{
+            (oauth_result.stdout | from_json)['spec']['identityProviders']
+            | default([])
+          }}
+
+    - name: Filtrar Identity Providers de tipo LDAP
+      set_fact:
+        ldap_idps: >-
+          {{
+            identity_providers
+            | selectattr('type', 'equalto', 'LDAP')
+            | list
+          }}
+
+    - name: Definir resultado final
+      set_fact:
+        resultado_final: >-
+          {% if ldap_idps | length == 0 %}
+          NO EXISTEN IDENTITY PROVIDERS LDAP CONFIGURADOS
+          {% else %}
+          {% for idp in ldap_idps %}
+          IDP LDAP: {{ idp.name }} - INSECURE: {{ idp.ldap.insecure | default('false') }}
+          {% endfor %}
+          {% endif %}
+
+    - name: Mostrar resultado final
+      debug:
+        msg: "{{ resultado_final }}"
