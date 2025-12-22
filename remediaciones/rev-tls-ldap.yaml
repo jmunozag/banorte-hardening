@@ -13,20 +13,11 @@
 
     - name: Extraer Identity Providers
       set_fact:
-        identity_providers: >-
-          {{
-            (oauth_result.stdout | from_json)['spec']['identityProviders']
-            | default([])
-          }}
+        identity_providers: "{{ (oauth_result.stdout | from_json)['spec']['identityProviders'] | default([]) }}"
 
     - name: Filtrar Identity Providers de tipo LDAP
       set_fact:
-        ldap_idps: >-
-          {{
-            identity_providers
-            | selectattr('type', 'equalto', 'LDAP')
-            | list
-          }}
+        ldap_idps: "{{ identity_providers | selectattr('type', 'equalto', 'LDAP') | list }}"
 
     - name: Definir resultado final
       set_fact:
@@ -35,7 +26,7 @@
           NO EXISTEN IDENTITY PROVIDERS LDAP CONFIGURADOS
           {% else %}
           {% for idp in ldap_idps %}
-          IDP LDAP: {{ idp.name }} - INSECURE: {{ idp.ldap.insecure | default('false') }}
+          IDP LDAP: {{ idp.name }} - INSECURE: {{ idp.ldap.insecure | default(false) }}
           {% endfor %}
           {% endif %}
 
