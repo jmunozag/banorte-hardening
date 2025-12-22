@@ -211,7 +211,7 @@
     # =========================================================
 
     - name: Enviar reporte por correo
-      mail:
+      community.general.mail:
         host: "{{ smtp_host }}"
         username: "{{ mail_from }}"
         password: "{{ mail_password }}"
