@@ -37,10 +37,14 @@
       command: oc get oauth cluster -o json
       register: oauth_result
       failed_when: false
-
     - name: Extraer Identity Providers
       set_fact:
-        identity_providers: "{{ (oauth_result.stdout | from_json)['spec']['identityProviders'] | default([]) }}"
+        identity_providers: >-
+          {{
+            (oauth_result.stdout | default('{}') | from_json).spec.identityProviders
+            | default([])
+          }}
+      when: oauth_result.rc == 0
 
     - name: Definir resultado kubeadmin
       set_fact:
