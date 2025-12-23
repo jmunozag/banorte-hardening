@@ -25,8 +25,32 @@
   tasks:
 
     # =========================================================
-    # OAUTH / IDENTITY PROVIDERS
+    # INICIALIZACIÓN GLOBAL (EVITA VARIABLES UNDEFINED)
     # =========================================================
+
+    - name: Inicializar variables globales
+      set_fact:
+        identity_providers: []
+        kubeadmin_resultado: ""
+        clf_items: []
+        clf_exists: false
+        clf_name: ""
+        audit_configured: false
+        node_count: 0
+        clf_pod_count: 0
+        clf_resultado: ""
+        ingress_resultado: ""
+        ldap_idps: []
+        ldap_resultado: ""
+
+    # =========================================================
+    # KUBEADMIN / OAUTH
+    # =========================================================
+
+    - name: Verificar existencia del secreto kubeadmin
+      command: oc get secret {{ kubeadmin_secret }} -n {{ kube_system_ns }}
+      register: kubeadmin_cmd
+      failed_when: false
 
     - name: Obtener configuración OAuth
       command: oc get oauth cluster -o json
@@ -36,21 +60,12 @@
     - name: Parsear OAuth JSON
       set_fact:
         oauth_json: "{{ oauth_cmd.stdout | default('{}') | from_json }}"
-      when: oauth_cmd.rc == 0
+      when: oauth_cmd.rc == 0 and oauth_cmd.stdout | length > 0
 
     - name: Extraer Identity Providers
       set_fact:
         identity_providers: "{{ oauth_json.spec.identityProviders | default([]) }}"
       when: oauth_cmd.rc == 0
-
-    # =========================================================
-    # KUBEADMIN
-    # =========================================================
-
-    - name: Verificar existencia del secreto kubeadmin
-      command: oc get secret {{ kubeadmin_secret }} -n {{ kube_system_ns }}
-      register: kubeadmin_cmd
-      failed_when: false
 
     - name: Definir resultado kubeadmin
       set_fact:
@@ -75,7 +90,7 @@
     - name: Parsear CLF JSON
       set_fact:
         clf_json: "{{ clf_cmd.stdout | default('{}') | from_json }}"
-      when: clf_cmd.rc == 0
+      when: clf_cmd.rc == 0 and clf_cmd.stdout | length > 0
 
     - name: Definir lista de CLF
       set_fact:
@@ -116,30 +131,23 @@
       register: nodes_cmd
       failed_when: false
 
-    - name: Parsear nodos JSON
-      set_fact:
-        nodes_json: "{{ nodes_cmd.stdout | default('{}') | from_json }}"
-      when: nodes_cmd.rc == 0
-
     - name: Definir cantidad de nodos
       set_fact:
-        node_count: "{{ nodes_json.items | default([]) | length }}"
-      when: nodes_cmd.rc == 0
+        node_count: "{{ (nodes_cmd.stdout | from_json).items | length }}"
+      when: nodes_cmd.rc == 0 and nodes_cmd.stdout | length > 0
 
     - name: Obtener DaemonSet collector
       command: oc get daemonset -n {{ logging_ns }} -l component=collector -o json
       register: ds_cmd
       failed_when: false
 
-    - name: Parsear DaemonSet JSON
-      set_fact:
-        ds_json: "{{ ds_cmd.stdout | default('{}') | from_json }}"
-      when: ds_cmd.rc == 0
-
     - name: Definir cantidad de pods collector
       set_fact:
-        clf_pod_count: "{{ ds_json.items[0].status.numberReady | default(0) }}"
-      when: ds_cmd.rc == 0 and (ds_json.items | default([]) | length > 0)
+        clf_pod_count: "{{ (ds_cmd.stdout | from_json).items[0].status.numberReady | default(0) }}"
+      when:
+        - ds_cmd.rc == 0
+        - ds_cmd.stdout | length > 0
+        - (ds_cmd.stdout | from_json).items | length > 0
 
     - name: Definir resultado CLF
       set_fact:
@@ -167,7 +175,7 @@
       set_fact:
         ingress_resultado: >-
           TLS CIPHERS CONFIGURADOS:
-          {{ ingress_tls_cmd.stdout if ingress_tls_cmd.stdout != "" else "NO DEFINIDOS" }}
+          {{ ingress_tls_cmd.stdout if ingress_tls_cmd.stdout | length > 0 else "NO DEFINIDOS" }}
 
     # =========================================================
     # LDAP IDENTITY PROVIDERS TLS
@@ -201,7 +209,7 @@
     - name: Construir estructura del reporte
       set_fact:
         report:
-          fecha: "{{ lookup('pipe', 'date --iso-8601=seconds') }}"
+          timestamp: "{{ lookup('pipe', 'date --iso-8601=seconds') }}"
           kubeadmin: "{{ kubeadmin_resultado }}"
           clusterlogforwarder: "{{ clf_resultado }}"
           ingress_tls: "{{ ingress_resultado }}"
@@ -211,8 +219,8 @@
       copy:
         dest: "{{ report_dir }}/{{ report_name }}.txt"
         content: |
-          REPORTE DE CONTROLES DE SEGURIDAD OPENSHIFT
-          Fecha: {{ report.fecha }}
+          REPORTE DE CONTROLES DE SEGURIDAD OCP
+          Fecha: {{ report.timestamp }}
 
           ---------------------------------
           KUBEADMIN
