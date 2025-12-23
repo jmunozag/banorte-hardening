@@ -1,0 +1,62 @@
+---
+- name: Revisión de SCC con allowedCapabilities configurado
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    compliance_ns: openshift-compliance
+    compliance_var: ocp4-var-sccs-with-allowed-capabilities-regex
+
+  tasks:
+
+    - name: Obtener variable de Compliance con SCC permitidos
+      command: >
+        oc get variable {{ compliance_var }}
+        -n {{ compliance_ns }}
+        -o jsonpath='{.value}'
+      register: scc_regex_cmd
+      failed_when: false
+
+    - name: Definir regex permitida
+      set_fact:
+        scc_allowed_regex: "{{ scc_regex_cmd.stdout | default('') }}"
+
+    - name: Obtener todos los SCC del cluster
+      command: oc get scc -o json
+      register: scc_cmd
+      failed_when: false
+
+    - name: Identificar SCC con allowedCapabilities no permitidos
+      set_fact:
+        scc_no_permitidos: >-
+          {{
+            (scc_cmd.stdout | from_json).items
+            | selectattr('allowedCapabilities', 'defined')
+            | selectattr('allowedCapabilities', 'ne', None)
+            | rejectattr('metadata.name', 'match', scc_allowed_regex)
+            | map(attribute='metadata.name')
+            | list
+          }}
+      when: scc_cmd.rc == 0
+
+    - name: Construir resultado del control
+      set_fact:
+        scc_capabilities_resultado: >-
+          {% if scc_allowed_regex == '' %}
+          NO SE PUDO OBTENER LA VARIABLE DE COMPLIANCE {{ compliance_var }}
+          {% elif scc_no_permitidos | length == 0 %}
+          TODOS LOS SCC CON allowedCapabilities CONFIGURADO ESTÁN PERMITIDOS
+          REGEX APLICADA: {{ scc_allowed_regex }}
+          {% else %}
+          SCC CON allowedCapabilities QUE REQUIEREN REVISIÓN:
+          REGEX APLICADA: {{ scc_allowed_regex }}
+
+          {% for scc in scc_no_permitidos %}
+          - {{ scc }}
+          {% endfor %}
+          {% endif %}
+
+    - name: Mostrar resultado
+      debug:
+        msg: "{{ scc_capabilities_resultado }}"
