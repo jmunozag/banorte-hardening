@@ -1,0 +1,47 @@
+---
+- name: Revisión de Routes edge-terminated y política TLS
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  tasks:
+
+    - name: Obtener todas las Routes del cluster
+      command: oc get routes --all-namespaces -o json
+      register: routes_cmd
+      failed_when: false
+
+    - name: Extraer Routes edge-terminated
+      set_fact:
+        edge_routes: >-
+          {{
+            (routes_cmd.stdout | from_json).items
+            | selectattr('spec.tls', 'defined')
+            | selectattr('spec.tls.termination', 'equalto', 'edge')
+            | list
+          }}
+      when: routes_cmd.rc == 0
+
+    - name: Construir resultado de validación TLS en Routes
+      set_fact:
+        routes_tls_resultado: >-
+          {% if edge_routes | length == 0 %}
+          NO EXISTEN ROUTES EDGE-TERMINATED EN EL CLUSTER
+          {% else %}
+          {% for route in edge_routes %}
+          Namespace: {{ route.metadata.namespace }}
+          Route: {{ route.metadata.name }}
+          insecureEdgeTerminationPolicy: {{ route.spec.tls.insecureEdgeTerminationPolicy | default('NOT SET') }}
+          {% if route.spec.tls.insecureEdgeTerminationPolicy is not defined
+                or route.spec.tls.insecureEdgeTerminationPolicy not in ['None', 'Redirect'] %}
+          ESTADO: NO CUMPLE
+          {% else %}
+          ESTADO: CUMPLE
+          {% endif %}
+
+          {% endfor %}
+          {% endif %}
+
+    - name: Mostrar resultado en pantalla
+      debug:
+        msg: "{{ routes_tls_resultado }}"
