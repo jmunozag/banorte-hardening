@@ -25,10 +25,10 @@
   tasks:
 
     # =========================================================
-    # INICIALIZACIÓN GLOBAL (EVITA VARIABLES UNDEFINED)
+    # INICIALIZACIÓN
     # =========================================================
 
-    - name: Inicializar variables globales
+    - name: Inicializar variables
       set_fact:
         identity_providers: []
         kubeadmin_resultado: ""
@@ -52,14 +52,14 @@
       register: kubeadmin_cmd
       failed_when: false
 
-    - name: Obtener configuración OAuth
+    - name: Obtener OAuth
       command: oc get oauth cluster -o json
       register: oauth_cmd
       failed_when: false
 
-    - name: Parsear OAuth JSON
+    - name: Parsear OAuth
       set_fact:
-        oauth_json: "{{ oauth_cmd.stdout | default('{}') | from_json }}"
+        oauth_json: "{{ oauth_cmd.stdout | from_json }}"
       when: oauth_cmd.rc == 0 and oauth_cmd.stdout | length > 0
 
     - name: Extraer Identity Providers
@@ -71,83 +71,47 @@
       set_fact:
         kubeadmin_resultado: >-
           {% if kubeadmin_cmd.rc != 0 %}
-          KUBEADMIN NO EXISTE - NO ES NECESARIO ELIMINAR
+          KUBEADMIN NO EXISTE
           {% elif identity_providers | length == 0 %}
-          KUBEADMIN EXISTE - IDENTITY PROVIDER NO - NO SE PUEDE ELIMINAR
+          KUBEADMIN EXISTE - IDP NO CONFIGURADO
           {% else %}
-          KUBEADMIN EXISTE - IDENTITY PROVIDER SI - ES POSIBLE ELIMINAR
+          KUBEADMIN EXISTE - IDP CONFIGURADO
           {% endif %}
 
     # =========================================================
     # CLUSTER LOG FORWARDER
     # =========================================================
 
-    - name: Obtener ClusterLogForwarder
+    - name: Obtener CLF
       command: oc get clusterlogforwarder -n {{ logging_ns }} -o json
       register: clf_cmd
       failed_when: false
 
-    - name: Parsear CLF JSON
+    - name: Parsear CLF
       set_fact:
-        clf_json: "{{ clf_cmd.stdout | default('{}') | from_json }}"
+        clf_json: "{{ clf_cmd.stdout | from_json }}"
       when: clf_cmd.rc == 0 and clf_cmd.stdout | length > 0
 
-    - name: Definir lista de CLF
+    - name: Definir CLF
       set_fact:
         clf_items: "{{ clf_json.items | default([]) }}"
+        clf_exists: "{{ clf_json.items | default([]) | length > 0 }}"
       when: clf_cmd.rc == 0
-
-    - name: Definir existencia de CLF
-      set_fact:
-        clf_exists: "{{ clf_items | length > 0 }}"
 
     - name: Extraer nombre CLF
       set_fact:
         clf_name: "{{ clf_items[0].metadata.name }}"
       when: clf_exists
 
-    - name: Validar configuración AUDIT
+    - name: Validar AUDIT
       set_fact:
         audit_configured: >-
           {{
-            (
-              clf_items[0].spec.inputs | default([])
-              | selectattr('type', 'equalto', 'audit')
-              | list | length > 0
-            )
-            or
-            (
-              clf_items[0].spec.pipelines | default([])
-              | map(attribute='inputRefs')
-              | flatten
-              | select('equalto', 'audit')
-              | list | length > 0
-            )
+            clf_items[0].spec.inputs | default([])
+            | selectattr('type', 'equalto', 'audit')
+            | list | length > 0
           }}
       when: clf_exists
-
-    - name: Obtener nodos del cluster
-      command: oc get nodes -o json
-      register: nodes_cmd
-      failed_when: false
-
-    - name: Definir cantidad de nodos
-      set_fact:
-        node_count: "{{ (nodes_cmd.stdout | from_json).items | length }}"
-      when: nodes_cmd.rc == 0 and nodes_cmd.stdout | length > 0
-
-    - name: Obtener DaemonSet collector
-      command: oc get daemonset -n {{ logging_ns }} -l component=collector -o json
-      register: ds_cmd
-      failed_when: false
-
-    - name: Definir cantidad de pods collector
-      set_fact:
-        clf_pod_count: "{{ (ds_cmd.stdout | from_json).items[0].status.numberReady | default(0) }}"
-      when:
-        - ds_cmd.rc == 0
-        - ds_cmd.stdout | length > 0
-        - (ds_cmd.stdout | from_json).items | length > 0
 
     - name: Definir resultado CLF
       set_fact:
@@ -155,33 +119,31 @@
           {% if not clf_exists %}
           CLF NO EXISTE
           {% elif not audit_configured %}
-          CLF {{ clf_name }} EXISTE - AUDIT NO CONFIGURADO
-          {% elif clf_pod_count != node_count %}
-          CLF {{ clf_name }} EXISTE - AUDIT CONFIGURADO - PODS {{ clf_pod_count }}/{{ node_count }} (INCORRECTO)
+          CLF {{ clf_name }} SIN AUDIT
           {% else %}
-          CLF {{ clf_name }} EXISTE - AUDIT CONFIGURADO - PODS {{ clf_pod_count }}/{{ node_count }} (CORRECTO)
+          CLF {{ clf_name }} CON AUDIT
           {% endif %}
 
     # =========================================================
-    # INGRESS CONTROLLER TLS
+    # INGRESS TLS
     # =========================================================
 
-    - name: Obtener TLS ciphers del Ingress Controller
+    - name: Obtener TLS Ingress
       command: oc get ingresscontrollers/default -n {{ ingress_ns }} -o jsonpath='{.status.tlsProfile.ciphers}'
       register: ingress_tls_cmd
       failed_when: false
 
-    - name: Definir resultado Ingress TLS
+    - name: Definir resultado Ingress
       set_fact:
         ingress_resultado: >-
-          TLS CIPHERS CONFIGURADOS:
+          TLS CIPHERS:
           {{ ingress_tls_cmd.stdout if ingress_tls_cmd.stdout | length > 0 else "NO DEFINIDOS" }}
 
     # =========================================================
-    # LDAP IDENTITY PROVIDERS TLS
+    # LDAP TLS
     # =========================================================
 
-    - name: Filtrar Identity Providers LDAP
+    - name: Filtrar LDAP
       set_fact:
         ldap_idps: "{{ identity_providers | selectattr('type', 'equalto', 'LDAP') | list }}"
 
@@ -189,10 +151,10 @@
       set_fact:
         ldap_resultado: >-
           {% if ldap_idps | length == 0 %}
-          NO EXISTEN IDENTITY PROVIDERS LDAP CONFIGURADOS
+          NO EXISTEN LDAP
           {% else %}
           {% for idp in ldap_idps %}
-          IDP LDAP: {{ idp.name }} - INSECURE: {{ idp.ldap.insecure | default(false) }}
+          LDAP {{ idp.name }} - insecure={{ idp.ldap.insecure | default(false) }}
           {% endfor %}
           {% endif %}
 
@@ -200,48 +162,33 @@
     # REPORTE
     # =========================================================
 
-    - name: Crear directorio de reportes
+    - name: Construir reporte texto
+      set_fact:
+        report_text: |
+          REPORTE DE SEGURIDAD OPENSHIFT
+          Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
+
+          KUBEADMIN
+          {{ kubeadmin_resultado }}
+
+          CLUSTER LOG FORWARDER
+          {{ clf_resultado }}
+
+          INGRESS TLS
+          {{ ingress_resultado }}
+
+          LDAP TLS
+          {{ ldap_resultado }}
+
+    - name: Crear directorio
       file:
         path: "{{ report_dir }}"
         state: directory
-        mode: '0755'
 
-    - name: Construir estructura del reporte
-      set_fact:
-        report:
-          timestamp: "{{ lookup('pipe', 'date --iso-8601=seconds') }}"
-          kubeadmin: "{{ kubeadmin_resultado }}"
-          clusterlogforwarder: "{{ clf_resultado }}"
-          ingress_tls: "{{ ingress_resultado }}"
-          ldap_tls: "{{ ldap_resultado }}"
-
-    - name: Generar reporte en texto
+    - name: Guardar reporte TXT
       copy:
         dest: "{{ report_dir }}/{{ report_name }}.txt"
-        content: |
-          REPORTE DE CONTROLES DE SEGURIDAD OCP
-          Fecha: {{ report.timestamp }}
-
-          ---------------------------------
-          KUBEADMIN
-          {{ report.kubeadmin }}
-
-          ---------------------------------
-          CLUSTER LOG FORWARDER
-          {{ report.clusterlogforwarder }}
-
-          ---------------------------------
-          INGRESS CONTROLLER TLS
-          {{ report.ingress_tls }}
-
-          ---------------------------------
-          LDAP IDENTITY PROVIDERS TLS
-          {{ report.ldap_tls }}
-
-    - name: Generar reporte en JSON
-      copy:
-        dest: "{{ report_dir }}/{{ report_name }}.json"
-        content: "{{ report | to_nice_json }}"
+        content: "{{ report_text }}"
 
     # =========================================================
     # ENVÍO
@@ -255,7 +202,7 @@
         port: 587
         to: "{{ mail_to }}"
         subject: "Reporte Seguridad OpenShift"
-        body: "{{ lookup('file', report_dir + '/' + report_name + '.txt') }}"
+        body: "{{ report_text }}"
       when: send_mail
 
     - name: Enviar reporte por webhook
@@ -264,7 +211,7 @@
         method: POST
         headers:
           Content-Type: application/json
-        body: "{{ report }}"
+        body:
+          report: "{{ report_text }}"
         body_format: json
-        status_code: [200, 201, 202]
       when: send_webhook
