@@ -23,7 +23,10 @@
       register: infra_cmd
       changed_when: false
       failed_when: infra_cmd.rc != 0
-
+      
+    - debug:
+        var: infra_cmd
+        
     - name: Definir nombre del cluster
       set_fact:
         cluster_name: >-
