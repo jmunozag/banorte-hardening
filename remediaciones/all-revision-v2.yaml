@@ -1,4 +1,3 @@
-#############################  FUNCIONAL / PROBADO EN LABORATORIO
 ---
 - name: Revisión informativa de controles de seguridad OpenShift y generación de reporte
   hosts: localhost
@@ -149,7 +148,7 @@
 
     - name: Obtener Ingress Controller
       command: >
-        oc get ingresscontroller {{ ingress_name }}
+        oc get ingresscontroller/default
         -n {{ ingress_ns }}
         -o json
       register: ingress_result
