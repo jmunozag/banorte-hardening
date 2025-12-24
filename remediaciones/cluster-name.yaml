@@ -32,3 +32,6 @@
             infra_info.resources[0].status.infrastructureName
             | default('DESCONOCIDO')
           }}
+
+    - debug:
+      var: cluster_name
