@@ -1,3 +1,4 @@
+#############################  FUNCIONAL / PROBADO EN LABORATORIO
 ---
 - name: Revisión informativa de controles de seguridad OpenShift y generación de reporte
   hosts: localhost
@@ -158,14 +159,15 @@
       set_fact:
         tls_ciphers: >-
           {{
-            (ingress_result.stdout | from_json)['status']['tlsProfile']['ciphers']
-            | default([])
+            (
+              ingress_result.stdout | default('{}') | from_json
+            ).status.tlsProfile.ciphers | default([])
           }}
+      when: ingress_result.rc == 0
 
     - name: Mostrar TLS configurados del cluster
       debug:
         msg: |
-          CLUSTER: {{ inventory_hostname }}
           TLS CIPHERS CONFIGURADOS:
           {{ tls_ciphers }}
 
