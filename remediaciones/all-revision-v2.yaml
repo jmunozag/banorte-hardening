@@ -39,7 +39,7 @@
         clf_name: ""
         audit_configured: false
         clf_resultado: ""
-        ingress_resultado: ""
+        tls_ciphers: ""
         ldap_idps: []
         ldap_resultado: ""
 
@@ -147,16 +147,28 @@
     # INGRESS CONTROLLER TLS
     # =========================================================
 
-    - name: Obtener TLS ciphers del Ingress Controller
-      command: oc get ingresscontrollers/default -n {{ ingress_ns }} -o jsonpath='{.status.tlsProfile.ciphers}'
-      register: ingress_tls_cmd
+    - name: Obtener Ingress Controller
+      command: >
+        oc get ingresscontroller {{ ingress_name }}
+        -n {{ ingress_ns }}
+        -o json
+      register: ingress_result
       failed_when: false
 
-    - name: Definir resultado Ingress TLS
+    - name: Extraer ciphers configurados
       set_fact:
-        ingress_resultado: >-
-          TLS CIPHERS:
-          {{ ingress_tls_cmd.stdout if ingress_tls_cmd.stdout | length > 0 else "NO DEFINIDOS" }}
+        tls_ciphers: >-
+          {{
+            (ingress_result.stdout | from_json)['status']['tlsProfile']['ciphers']
+            | default([])
+          }}
+
+    - name: Mostrar TLS configurados del cluster
+      debug:
+        msg: |
+          CLUSTER: {{ inventory_hostname }}
+          TLS CIPHERS CONFIGURADOS:
+          {{ tls_ciphers }}
 
     # =========================================================
     # LDAP IDENTITY PROVIDERS TLS
@@ -202,7 +214,7 @@
           INGRESS CONTROLLER TLS
           Ensure that the Ingress Controller only makes use of Strong -	ocp4-pci-dss-4-0-ingress-controller-tls-cipher-suites
           Listado de TLS configruados en ingresscontrollers/default
-          {{ ingress_resultado }}
+          {{ tls_ciphers }}
 
           ---------------------------------
           LDAP IDENTITY PROVIDERS TLS
