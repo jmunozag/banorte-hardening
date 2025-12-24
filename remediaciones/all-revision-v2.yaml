@@ -161,7 +161,7 @@
           {{
             (
               ingress_result.stdout | default('{}') | from_json
-            ).status.tlsProfile.ciphers | default([])
+            ).spec.tlsProfile.ciphers | default([])
           }}
       when: ingress_result.rc == 0
 
