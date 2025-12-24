@@ -1,3 +1,4 @@
+#############################  FUNCIONAL / PROBADO EN LABORATORIO
 ---
 - name: Revisión informativa de controles de seguridad OpenShift y generación de reporte
   hosts: localhost
@@ -30,18 +31,36 @@
 
     - name: Inicializar variables
       set_fact:
+        cluster_name: DESCONOCIDO
         identity_providers: []
         kubeadmin_resultado: ""
         clf_items: []
         clf_exists: false
         clf_name: ""
         audit_configured: false
-        node_count: 0
-        clf_pod_count: 0
         clf_resultado: ""
         ingress_resultado: ""
         ldap_idps: []
         ldap_resultado: ""
+
+    # =========================================================
+    # NOMBRE DEL CLUSTER
+    # =========================================================
+
+    - name: Obtener información de infraestructura del cluster
+      command: oc get infrastructure cluster -o json
+      register: infra_cmd
+      failed_when: false
+
+    - name: Parsear infraestructura
+      set_fact:
+        infra_json: "{{ infra_cmd.stdout | from_json }}"
+      when: infra_cmd.rc == 0 and infra_cmd.stdout | length > 0
+
+    - name: Definir nombre del cluster
+      set_fact:
+        cluster_name: "{{ infra_json.status.infrastructureName | default('DESCONOCIDO') }}"
+      when: infra_cmd.rc == 0
 
     # =========================================================
     # KUBEADMIN / OAUTH
@@ -71,18 +90,18 @@
       set_fact:
         kubeadmin_resultado: >-
           {% if kubeadmin_cmd.rc != 0 %}
-          KUBEADMIN NO EXISTE
+          El secreto kubeadmin NO EXISTE
           {% elif identity_providers | length == 0 %}
-          KUBEADMIN EXISTE - IDP NO CONFIGURADO
+          El secreto kubeadmin EXISTE - IdentityProvider se encuentra NO CONFIGURADO
           {% else %}
-          KUBEADMIN EXISTE - IDP CONFIGURADO
+          El secreto kubeadmin EXISTE - IdentityProvider se encuentra CONFIGURADO
           {% endif %}
 
     # =========================================================
     # CLUSTER LOG FORWARDER
     # =========================================================
 
-    - name: Obtener CLF
+    - name: Obtener ClusterLogForwarder
       command: oc get clusterlogforwarder -n {{ logging_ns }} -o json
       register: clf_cmd
       failed_when: false
@@ -92,7 +111,7 @@
         clf_json: "{{ clf_cmd.stdout | from_json }}"
       when: clf_cmd.rc == 0 and clf_cmd.stdout | length > 0
 
-    - name: Definir CLF
+    - name: Definir CLF existente
       set_fact:
         clf_items: "{{ clf_json.items | default([]) }}"
         clf_exists: "{{ clf_json.items | default([]) | length > 0 }}"
@@ -103,7 +122,7 @@
         clf_name: "{{ clf_items[0].metadata.name }}"
       when: clf_exists
 
-    - name: Validar AUDIT
+    - name: Validar configuración AUDIT
       set_fact:
         audit_configured: >-
           {{
@@ -117,33 +136,33 @@
       set_fact:
         clf_resultado: >-
           {% if not clf_exists %}
-          CLF NO EXISTE
+          La instancia ClusterLogForwarder (CLF) del Operador ClusterLogging NO EXISTE
           {% elif not audit_configured %}
-          CLF {{ clf_name }} SIN AUDIT
+          La instancia ClusterLogForwarder existe - Nombre: {{ clf_name }} - CLF configurado SIN AUDIT LOGS
           {% else %}
-          CLF {{ clf_name }} CON AUDIT
+          La instancia ClusterLogForwarder existe - Nombre: {{ clf_name }} - CLF configurado CON AUDIT LOGS
           {% endif %}
 
     # =========================================================
-    # INGRESS TLS
+    # INGRESS CONTROLLER TLS
     # =========================================================
 
-    - name: Obtener TLS Ingress
+    - name: Obtener TLS ciphers del Ingress Controller
       command: oc get ingresscontrollers/default -n {{ ingress_ns }} -o jsonpath='{.status.tlsProfile.ciphers}'
       register: ingress_tls_cmd
       failed_when: false
 
-    - name: Definir resultado Ingress
+    - name: Definir resultado Ingress TLS
       set_fact:
         ingress_resultado: >-
           TLS CIPHERS:
           {{ ingress_tls_cmd.stdout if ingress_tls_cmd.stdout | length > 0 else "NO DEFINIDOS" }}
 
     # =========================================================
-    # LDAP TLS
+    # LDAP IDENTITY PROVIDERS TLS
     # =========================================================
 
-    - name: Filtrar LDAP
+    - name: Filtrar Identity Providers LDAP
       set_fact:
         ldap_idps: "{{ identity_providers | selectattr('type', 'equalto', 'LDAP') | list }}"
 
@@ -151,10 +170,10 @@
       set_fact:
         ldap_resultado: >-
           {% if ldap_idps | length == 0 %}
-          NO EXISTEN LDAP
+          LDAPS NO configurados como IdentityProviders en oauth/cluster
           {% else %}
           {% for idp in ldap_idps %}
-          LDAP {{ idp.name }} - insecure={{ idp.ldap.insecure | default(false) }}
+          LDAP Configurado - Nombre: {{ idp.name }} - Configuración insecure = {{ idp.ldap.insecure | default(false) }}
           {% endfor %}
           {% endif %}
 
@@ -162,25 +181,35 @@
     # REPORTE
     # =========================================================
 
-    - name: Construir reporte texto
+    - name: Construir reporte en texto
       set_fact:
         report_text: |
           REPORTE DE SEGURIDAD OPENSHIFT
           Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
+          Cluster: {{ cluster_name }}
 
+          ---------------------------------
           KUBEADMIN
+          Ensure that the kubeadmin secret has been removed -	ocp4-pci-dss-4-0-kubeadmin-removed
           {{ kubeadmin_resultado }}
 
+          ---------------------------------
           CLUSTER LOG FORWARDER
+          Ensure that Audit Log Forwarding Is Enabled	- ocp4-pci-dss-4-0-audit-log-forwarding-enabled
           {{ clf_resultado }}
 
-          INGRESS TLS
+          ---------------------------------
+          INGRESS CONTROLLER TLS
+          Ensure that the Ingress Controller only makes use of Strong -	ocp4-pci-dss-4-0-ingress-controller-tls-cipher-suites
+          Listado de TLS configruados en ingresscontrollers/default
           {{ ingress_resultado }}
 
-          LDAP TLS
+          ---------------------------------
+          LDAP IDENTITY PROVIDERS TLS
+          Only Use LDAP-based IdPs with TLS	- ocp4-pci-dss-4-0-ocp-no-ldap-insecure
           {{ ldap_resultado }}
 
-    - name: Crear directorio
+    - name: Crear directorio de reportes
       file:
         path: "{{ report_dir }}"
         state: directory
@@ -201,7 +230,7 @@
         password: "{{ mail_password }}"
         port: 587
         to: "{{ mail_to }}"
-        subject: "Reporte Seguridad OpenShift"
+        subject: "Reporte Seguridad OpenShift - {{ cluster_name }}"
         body: "{{ report_text }}"
       when: send_mail
 
@@ -212,6 +241,7 @@
         headers:
           Content-Type: application/json
         body:
+          cluster: "{{ cluster_name }}"
           report: "{{ report_text }}"
         body_format: json
       when: send_webhook
