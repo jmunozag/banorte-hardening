@@ -1,0 +1,36 @@
+---
+- name: Revisión informativa de controles de seguridad OpenShift y generación de reporte
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  tasks:
+
+    # =========================================================
+    # INICIALIZACIÓN
+    # =========================================================
+
+    - name: Inicializar variables
+      set_fact:
+        cluster_name: DESCONOCIDO
+
+    # =========================================================
+    # NOMBRE DEL CLUSTER
+    # =========================================================
+
+    - name: Obtener información de infraestructura del cluster
+      command: oc get infrastructure cluster -o json
+      register: infra_cmd
+      changed_when: false
+      failed_when: infra_cmd.rc != 0
+
+    - name: Definir nombre del cluster
+      set_fact:
+        cluster_name: >-
+          {{
+            (infra_cmd.stdout | from_json).status.infrastructureName
+            | default('DESCONOCIDO')
+          }}
+
+    - debug:
+        var: cluster_name
