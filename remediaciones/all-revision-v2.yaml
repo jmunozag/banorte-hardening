@@ -62,12 +62,8 @@
             | default('DESCONOCIDO')
           }}
 
-    # =========================================================
-    # KUBEADMIN / OAUTH
-    # =========================================================
-
 # =========================================================
-# KUBEADMIN / OAUTH (k8s_info)
+# KUBEADMIN / OAUTH 
 # =========================================================
 
     - name: Obtener secreto kubeadmin
@@ -188,24 +184,31 @@
           TLS CIPHERS CONFIGURADOS:
           {{ tls_ciphers }}
 
-    # =========================================================
-    # LDAP IDENTITY PROVIDERS TLS
-    # =========================================================
+# =========================================================
+# LDAP IDENTITY PROVIDERS TLS
+# =========================================================
 
     - name: Filtrar Identity Providers LDAP
       set_fact:
-        ldap_idps: "{{ identity_providers | selectattr('type', 'equalto', 'LDAP') | list }}"
-
-    - name: Definir resultado LDAP
+        ldap_idps: >-
+          {{
+            identity_providers
+            | selectattr('type', 'equalto', 'LDAP')
+            | list
+          }}
+    
+    - name: Construir resultado LDAP
       set_fact:
         ldap_resultado: >-
           {% if ldap_idps | length == 0 %}
           LDAPS NO configurados como IdentityProviders en oauth/cluster
           {% else %}
           {% for idp in ldap_idps %}
-          LDAP Configurado - Nombre: {{ idp.name }} - Configuración insecure = {{ idp.ldap.insecure | default(false) }}
+          LDAP Configurado - Nombre: {{ idp.name }}
+          - insecure: {{ idp.ldap.insecure | default(false) }}
           {% endfor %}
           {% endif %}
+    
 
     # =========================================================
     # REPORTE
