@@ -1,4 +1,6 @@
-#############################  FUNCIONAL / PROBADO EN LABORATORIO
+#############################
+# FUNCIONAL / CONSOLIDADO / CORREGIDO
+#############################
 ---
 - name: Revisión informativa de controles de seguridad OpenShift y generación de reporte
   hosts: localhost
@@ -39,7 +41,8 @@
         clf_name: ""
         audit_configured: false
         clf_resultado: ""
-        tls_ciphers: ""
+        tls_ciphers: []
+        ingress_tls_resultado: ""
         ldap_idps: []
         ldap_resultado: ""
 
@@ -47,13 +50,13 @@
     # NOMBRE DEL CLUSTER
     # =========================================================
 
-    - name: Obtener infraestructura del cluster (API OpenShift)
+    - name: Obtener infraestructura del cluster
       kubernetes.core.k8s_info:
         api_version: config.openshift.io/v1
         kind: Infrastructure
         name: cluster
       register: infra_info
-    
+
     - name: Definir nombre del cluster
       set_fact:
         cluster_name: >-
@@ -62,9 +65,9 @@
             | default('DESCONOCIDO')
           }}
 
-# =========================================================
-# KUBEADMIN / OAUTH 
-# =========================================================
+    # =========================================================
+    # KUBEADMIN / OAUTH
+    # =========================================================
 
     - name: Obtener secreto kubeadmin
       kubernetes.core.k8s_info:
@@ -74,61 +77,53 @@
         namespace: "{{ kube_system_ns }}"
       register: kubeadmin_info
       failed_when: false
-    
+
     - name: Definir existencia de kubeadmin
       set_fact:
         kubeadmin_exists: "{{ kubeadmin_info.resources | default([]) | length > 0 }}"
-    
-    - name: Obtener configuración OAuth del cluster
+
+    - name: Obtener configuración OAuth
       kubernetes.core.k8s_info:
         api_version: config.openshift.io/v1
         kind: OAuth
         name: cluster
       register: oauth_info
       failed_when: false
-    
+
     - name: Extraer Identity Providers
       set_fact:
-        identity_providers: >-
-          {{
-            oauth_info.resources[0].spec.identityProviders
-            | default([])
-          }}
+        identity_providers: "{{ oauth_info.resources[0].spec.identityProviders | default([]) }}"
       when:
         - oauth_info.resources is defined
         - oauth_info.resources | length > 0
-    
+
     - name: Definir resultado kubeadmin
       set_fact:
         kubeadmin_resultado: >-
           {% if not kubeadmin_exists %}
           El secreto kubeadmin NO EXISTE
           {% elif identity_providers | length == 0 %}
-          El secreto kubeadmin EXISTE - IdentityProvider se encuentra NO CONFIGURADO
+          El secreto kubeadmin EXISTE - IdentityProvider NO CONFIGURADO
           {% else %}
-          El secreto kubeadmin EXISTE - IdentityProvider se encuentra CONFIGURADO
+          El secreto kubeadmin EXISTE - IdentityProvider CONFIGURADO
           {% endif %}
-    
 
     # =========================================================
     # CLUSTER LOG FORWARDER
     # =========================================================
 
     - name: Obtener ClusterLogForwarder
-      command: oc get clusterlogforwarder -n {{ logging_ns }} -o json
-      register: clf_cmd
+      kubernetes.core.k8s_info:
+        api_version: logging.openshift.io/v1
+        kind: ClusterLogForwarder
+        namespace: "{{ logging_ns }}"
+      register: clf_info
       failed_when: false
-
-    - name: Parsear CLF
-      set_fact:
-        clf_json: "{{ clf_cmd.stdout | from_json }}"
-      when: clf_cmd.rc == 0 and clf_cmd.stdout | length > 0
 
     - name: Definir CLF existente
       set_fact:
-        clf_items: "{{ clf_json.items | default([]) }}"
-        clf_exists: "{{ clf_json.items | default([]) | length > 0 }}"
-      when: clf_cmd.rc == 0
+        clf_items: "{{ clf_info.resources | default([]) }}"
+        clf_exists: "{{ clf_info.resources | default([]) | length > 0 }}"
 
     - name: Extraer nombre CLF
       set_fact:
@@ -151,64 +146,61 @@
           {% if not clf_exists %}
           La instancia ClusterLogForwarder (CLF) del Operador ClusterLogging NO EXISTE
           {% elif not audit_configured %}
-          La instancia ClusterLogForwarder existe - Nombre: {{ clf_name }} - CLF configurado SIN AUDIT LOGS
+          La instancia ClusterLogForwarder existe - Nombre: {{ clf_name }} - SIN AUDIT LOGS
           {% else %}
-          La instancia ClusterLogForwarder existe - Nombre: {{ clf_name }} - CLF configurado CON AUDIT LOGS
+          La instancia ClusterLogForwarder existe - Nombre: {{ clf_name }} - CON AUDIT LOGS
           {% endif %}
 
     # =========================================================
     # INGRESS CONTROLLER TLS
     # =========================================================
 
-    - name: Obtener Ingress Controller
-      command: >
-        oc get ingresscontroller/default
-        -n {{ ingress_ns }}
-        -o json
-      register: ingress_result
+    - name: Obtener IngressController default
+      kubernetes.core.k8s_info:
+        api_version: operator.openshift.io/v1
+        kind: IngressController
+        name: default
+        namespace: "{{ ingress_ns }}"
+      register: ingress_info
       failed_when: false
 
-    - name: Extraer ciphers configurados
+    - name: Extraer TLS ciphers efectivos
       set_fact:
-        tls_ciphers: >-
-          {{
-            (
-              ingress_result.stdout | default('{}') | from_json
-            ).spec.tlsProfile.ciphers | default([])
-          }}
-      when: ingress_result.rc == 0
+        tls_ciphers: "{{ ingress_info.resources[0].status.tlsProfile.ciphers | default([]) }}"
+      when:
+        - ingress_info.resources is defined
+        - ingress_info.resources | length > 0
 
-    - name: Mostrar TLS configurados del cluster
-      debug:
-        msg: |
-          TLS CIPHERS CONFIGURADOS:
-          {{ tls_ciphers }}
+    - name: Definir resultado Ingress TLS
+      set_fact:
+        ingress_tls_resultado: >-
+          {% if tls_ciphers | length == 0 %}
+          NO SE ENCUENTRAN CIPHERS TLS CONFIGURADOS EN ingresscontrollers/default
+          {% else %}
+          CIPHERS TLS CONFIGURADOS EN ingresscontrollers/default:
+          {% for cipher in tls_ciphers %}
+          - {{ cipher }}
+          {% endfor %}
+          {% endif %}
 
-# =========================================================
-# LDAP IDENTITY PROVIDERS TLS
-# =========================================================
+    # =========================================================
+    # LDAP IDENTITY PROVIDERS TLS
+    # =========================================================
 
     - name: Filtrar Identity Providers LDAP
       set_fact:
-        ldap_idps: >-
-          {{
-            identity_providers
-            | selectattr('type', 'equalto', 'LDAP')
-            | list
-          }}
-    
-    - name: Construir resultado LDAP
+        ldap_idps: "{{ identity_providers | selectattr('type', 'equalto', 'LDAP') | list }}"
+
+    - name: Definir resultado LDAP
       set_fact:
         ldap_resultado: >-
           {% if ldap_idps | length == 0 %}
           LDAPS NO configurados como IdentityProviders en oauth/cluster
           {% else %}
           {% for idp in ldap_idps %}
-          LDAP Configurado - Nombre: {{ idp.name }}
-          - insecure: {{ idp.ldap.insecure | default(false) }}
+          LDAP Configurado - Nombre: {{ idp.name }} - insecure: {{ idp.ldap.insecure | default(false) }}
           {% endfor %}
           {% endif %}
-    
 
     # =========================================================
     # REPORTE
@@ -235,7 +227,7 @@
           INGRESS CONTROLLER TLS
           Ensure that the Ingress Controller only makes use of Strong -	ocp4-pci-dss-4-0-ingress-controller-tls-cipher-suites
           Listado de TLS configruados en ingresscontrollers/default
-          {{ tls_ciphers }}
+          {{ ingress_tls_resultado }}
 
           ---------------------------------
           LDAP IDENTITY PROVIDERS TLS
