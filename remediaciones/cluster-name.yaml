@@ -18,22 +18,17 @@
     # NOMBRE DEL CLUSTER
     # =========================================================
 
-    - name: Obtener información de infraestructura del cluster
-      command: oc get infrastructure cluster -o json
-      register: infra_cmd
-      changed_when: false
-      failed_when: infra_cmd.rc != 0
-      
-    - debug:
-        var: infra_cmd
-        
+    - name: Obtener infraestructura del cluster (API OpenShift)
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: Infrastructure
+        name: cluster
+      register: infra_info
+    
     - name: Definir nombre del cluster
       set_fact:
         cluster_name: >-
           {{
-            (infra_cmd.stdout | from_json).status.infrastructureName
+            infra_info.resources[0].status.infrastructureName
             | default('DESCONOCIDO')
           }}
-
-    - debug:
-        var: cluster_name
