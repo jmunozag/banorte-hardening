@@ -66,36 +66,53 @@
     # KUBEADMIN / OAUTH
     # =========================================================
 
-    - name: Verificar existencia del secreto kubeadmin
-      command: oc get secret {{ kubeadmin_secret }} -n {{ kube_system_ns }}
-      register: kubeadmin_cmd
-      failed_when: false
+# =========================================================
+# KUBEADMIN / OAUTH (k8s_info)
+# =========================================================
 
-    - name: Obtener OAuth
-      command: oc get oauth cluster -o json
-      register: oauth_cmd
+    - name: Obtener secreto kubeadmin
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: "{{ kubeadmin_secret }}"
+        namespace: "{{ kube_system_ns }}"
+      register: kubeadmin_info
       failed_when: false
-
-    - name: Parsear OAuth
+    
+    - name: Definir existencia de kubeadmin
       set_fact:
-        oauth_json: "{{ oauth_cmd.stdout | from_json }}"
-      when: oauth_cmd.rc == 0 and oauth_cmd.stdout | length > 0
-
+        kubeadmin_exists: "{{ kubeadmin_info.resources | default([]) | length > 0 }}"
+    
+    - name: Obtener configuración OAuth del cluster
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: OAuth
+        name: cluster
+      register: oauth_info
+      failed_when: false
+    
     - name: Extraer Identity Providers
       set_fact:
-        identity_providers: "{{ oauth_json.spec.identityProviders | default([]) }}"
-      when: oauth_cmd.rc == 0
-
+        identity_providers: >-
+          {{
+            oauth_info.resources[0].spec.identityProviders
+            | default([])
+          }}
+      when:
+        - oauth_info.resources is defined
+        - oauth_info.resources | length > 0
+    
     - name: Definir resultado kubeadmin
       set_fact:
         kubeadmin_resultado: >-
-          {% if kubeadmin_cmd.rc != 0 %}
+          {% if not kubeadmin_exists %}
           El secreto kubeadmin NO EXISTE
           {% elif identity_providers | length == 0 %}
           El secreto kubeadmin EXISTE - IdentityProvider se encuentra NO CONFIGURADO
           {% else %}
           El secreto kubeadmin EXISTE - IdentityProvider se encuentra CONFIGURADO
           {% endif %}
+    
 
     # =========================================================
     # CLUSTER LOG FORWARDER
