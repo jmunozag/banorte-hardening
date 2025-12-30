@@ -8,10 +8,6 @@
   connection: local
 
   vars:
-    kubeadmin_secret: kubeadmin
-    kube_system_ns: kube-system
-    logging_ns: openshift-logging
-    ingress_ns: openshift-ingress-operator
 
     report_dir: /tmp/ocp-reports
     report_name: "reporte-ocp-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
@@ -73,8 +69,8 @@
       kubernetes.core.k8s_info:
         api_version: v1
         kind: Secret
-        name: "{{ kubeadmin_secret }}"
-        namespace: "{{ kube_system_ns }}"
+        name: kubeadmin
+        namespace: kube-system
       register: kubeadmin_info
       failed_when: false
 
