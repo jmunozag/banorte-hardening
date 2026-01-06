@@ -8,6 +8,7 @@
   connection: local
 
   vars:
+    ingress_ns: openshift-ingress-operator
 
     report_dir: /tmp/ocp-reports
     report_name: "reporte-ocp-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
