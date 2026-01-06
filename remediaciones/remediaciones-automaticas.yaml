@@ -1,0 +1,96 @@
+---
+- name: Gestión de ComplianceRemediations OpenShift
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    mode: inform            # inform | enforce
+    remediation_names: []   # Lista opcional de remediaciones a aplicar
+
+  tasks:
+
+    # =========================================================
+    # VALIDACIONES INICIALES
+    # =========================================================
+
+    - name: Validar modo de ejecución
+      fail:
+        msg: "El modo debe ser 'inform' o 'enforce'"
+      when: mode not in ['inform', 'enforce']
+
+    # =========================================================
+    # OBTENER COMPLIANCE REMEDIATIONS
+    # =========================================================
+
+    - name: Obtener ComplianceRemediations del cluster
+      kubernetes.core.k8s_info:
+        api_version: compliance.openshift.io/v1alpha1
+        kind: ComplianceRemediation
+      register: remediation_info
+
+    - name: Definir lista de remediaciones
+      set_fact:
+        all_remediations: "{{ remediation_info.resources | default([]) }}"
+
+    - name: Filtrar remediaciones objetivo
+      set_fact:
+        target_remediations: >-
+          {{
+            all_remediations
+            if remediation_names | length == 0
+            else all_remediations
+                 | selectattr('metadata.name', 'in', remediation_names)
+                 | list
+          }}
+
+    # =========================================================
+    # MODO INFORM
+    # =========================================================
+
+    - name: Mostrar ComplianceRemediations disponibles
+      debug:
+        msg: |
+          COMPLIANCE REMEDIATIONS DISPONIBLES:
+          {% for r in all_remediations %}
+          - {{ r.metadata.name }}
+            Namespace: {{ r.metadata.namespace }}
+            Estado aplicado: {{ r.status.applicationState | default('N/A') }}
+          {% endfor %}
+      when: mode == 'inform'
+
+    # =========================================================
+    # MODO ENFORCE
+    # =========================================================
+
+    - name: Validar remediaciones a ejecutar
+      fail:
+        msg: "No se encontraron ComplianceRemediations para aplicar"
+      when:
+        - mode == 'enforce'
+        - target_remediations | length == 0
+
+    - name: Aplicar ComplianceRemediations (enforce)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: compliance.openshift.io/v1alpha1
+          kind: ComplianceRemediation
+          metadata:
+            name: "{{ item.metadata.name }}"
+            namespace: "{{ item.metadata.namespace }}"
+          spec:
+            apply: true
+      loop: "{{ target_remediations }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+      when: mode == 'enforce'
+
+    - name: Confirmación de remediaciones aplicadas
+      debug:
+        msg: |
+          REMEDIACIONES EJECUTADAS:
+          {% for r in target_remediations %}
+          - {{ r.metadata.name }}
+          {% endfor %}
+      when: mode == 'enforce'
