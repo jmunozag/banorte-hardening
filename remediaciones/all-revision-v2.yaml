@@ -112,7 +112,7 @@
       kubernetes.core.k8s_info:
         api_version: logging.openshift.io/v1
         kind: ClusterLogForwarder
-        namespace: "{{ logging_ns }}"
+        namespace: openshift-logging
       register: clf_info
       failed_when: false
 
@@ -156,7 +156,7 @@
         api_version: operator.openshift.io/v1
         kind: IngressController
         name: default
-        namespace: "{{ ingress_ns }}"
+        namespace: openshift-ingress-operator
       register: ingress_info
       failed_when: false
 
