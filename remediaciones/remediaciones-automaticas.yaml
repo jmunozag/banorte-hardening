@@ -18,7 +18,7 @@
     mail_password: "qfni wfkv uxsw dyjf"
     smtp_host: smtp.gmail.com
     
-    webhook_url: "https://banorte-url.com"
+    webhook_url: "https://tu-url-de-webhook.com"
 
   tasks:
     - name: Validar modo de ejecución
