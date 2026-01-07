@@ -5,8 +5,6 @@
   connection: local
 
   vars:
-    compliance_mode: enforce  # Cambiado a enforce para probar la aplicación
-    remediation_name: ""
     report_dir: /tmp/ocp-reports
     report_name: "reporte-compliance-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
     send_mail: true
