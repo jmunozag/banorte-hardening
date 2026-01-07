@@ -107,7 +107,7 @@
     - name: Enviar reporte por correo
       community.general.mail:
         host: "{{ smtp_host }}"
-        port: "{{ smtp_port }}"
+        port: 587
         username: "{{ mail_from }}"
         password: "{{ mail_password }}"
         to: "{{ mail_to }}"
