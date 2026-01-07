@@ -190,7 +190,7 @@
       set_fact:
         ldap_resultado: >-
           {% if ldap_idps | length == 0 %}
-          LDAPS NO configurados como IdentityProviders en oauth/cluster
+          Protocolo LDAP NO configurados como IdentityProvider en recurso OAuth
           {% else %}
           {% for idp in ldap_idps %}
           LDAP Configurado - Nombre: {{ idp.name }} - insecure: {{ idp.ldap.insecure | default(false) }}
