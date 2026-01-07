@@ -1,6 +1,3 @@
-#############################
-# FUNCIONAL / CONSOLIDADO / CORREGIDO
-#############################
 ---
 - name: Revisión informativa de controles de seguridad OpenShift y generación de reporte
   hosts: localhost
@@ -9,18 +6,19 @@
 
   vars:
     ingress_ns: openshift-ingress-operator
-
     report_dir: /tmp/ocp-reports
     report_name: "reporte-ocp-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
 
     send_mail: true
     mail_to: jmunozag@redhat.com
     mail_from: botkev838@gmail.com
-    mail_password: "qfni wfkv uxsw dyjf"
+    mail_password: "qfni wfkv uxsw dyjf"
     smtp_host: smtp.gmail.com
 
     send_webhook: false
     webhook_url: https://webhook.empresa.cl/ocp/report
+
+  tasks:
 
   tasks:
 
@@ -244,7 +242,7 @@
     # =========================================================
     # ENVÍO
     # =========================================================
-
+     
     - name: Enviar reporte por correo
       community.general.mail:
         host: "{{ smtp_host }}"
@@ -252,7 +250,7 @@
         password: "{{ mail_password }}"
         port: 587
         to: "{{ mail_to }}"
-        subject: "Reporte Seguridad OpenShift - {{ cluster_name }}"
+        subject: "Reporte Seguridad OpenShift - {{ cluster_name | trim }}"
         body: "{{ report_text }}"
       when: send_mail
 
