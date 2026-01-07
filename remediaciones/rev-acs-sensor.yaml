@@ -1,0 +1,122 @@
+---
+- name: Compliance - Verify ACS Sensor Deployment
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    # Parámetros para el reporte
+    report_dir: /tmp/acs-reports
+    report_name: "acs-sensor-status-{{ lookup('pipe', 'date +%Y%m%d') }}"
+    
+    # Datos de notificación
+    send_mail: true
+    mail_to: jmunozag@redhat.com
+    mail_from: botkev838@gmail.com
+    mail_password: "qfni wfkv uxsw dyjf"
+    smtp_host: smtp.gmail.com
+
+  tasks:
+    - name: Obtener información del cluster
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: Infrastructure
+        name: cluster
+      register: infra_info
+
+    - name: Set cluster name
+      set_fact:
+        cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('DESCONOCIDO') }}"
+
+    # =========================================================
+    # VERIFICACIÓN TÉCNICA DEL SENSOR ACS
+    # =========================================================
+
+    - name: Chequear existencia del Namespace stackrox
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: stackrox
+      register: ns_stackrox
+
+    - name: Chequear Deployment del Sensor en stackrox
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: sensor
+        namespace: stackrox
+      register: sensor_deploy
+      when: ns_stackrox.resources | length > 0
+
+    - name: Evaluar cumplimiento de la política
+      set_fact:
+        acs_status: >-
+          {% if ns_stackrox.resources | length == 0 %}
+            NON-COMPLIANT (Namespace stackrox no existe)
+          {% elif sensor_deploy.resources | length == 0 %}
+            NON-COMPLIANT (Deployment 'sensor' no encontrado)
+          {% elif sensor_deploy.resources[0].status.availableReplicas | default(0) > 0 %}
+            COMPLIANT (Operativo)
+          {% else %}
+            NON-COMPLIANT (Sensor instalado pero no disponible/error)
+          {% endif %}
+
+    # =========================================================
+    # GENERACIÓN DE REPORTE
+    # =========================================================
+
+    - name: Construir reporte de cumplimiento ACS
+      set_fact:
+        report_text: |
+          REPORTE DE CUMPLIMIENTO PCI-DSS: ACS SENSOR
+          =============================================
+          Política: ocp4-pci-dss-4-0-acs-sensor-exists
+          Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
+          Cluster: {{ cluster_name }}
+          
+          ESTADO DE CUMPLIMIENTO: {{ acs_status }}
+          
+          DETALLES TÉCNICOS:
+          ---------------------------------------------
+          - Namespace 'stackrox': {{ 'Presente' if ns_stackrox.resources | length > 0 else 'Ausente' }}
+          {% if ns_stackrox.resources | length > 0 %}
+          - Deployment 'sensor': {{ 'Encontrado' if sensor_deploy.resources | length > 0 else 'No encontrado' }}
+          {% if sensor_deploy.resources | length > 0 %}
+          - Réplicas Disponibles: {{ sensor_deploy.resources[0].status.availableReplicas | default(0) }}
+          - Imagen: {{ sensor_deploy.resources[0].spec.template.spec.containers[0].image }}
+          {% endif %}
+          {% endif %}
+          
+          RECOMENDACIÓN:
+          {% if 'NON-COMPLIANT' in acs_status %}
+          ALERTA: Se requiere intervención manual o vía GitOps para desplegar el Sensor.
+          La ausencia del Sensor impide detectar vulnerabilidades y cumplir con PCI.
+          {% else %}
+          El sensor está monitoreando eventos de API y Collector correctamente.
+          {% endif %}
+          =============================================
+
+    - name: Asegurar directorio de reportes
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Guardar reporte local
+      copy:
+        dest: "{{ report_dir }}/{{ report_name }}-{{ cluster_name }}.txt"
+        content: "{{ report_text }}"
+        mode: '0644'
+
+    - name: Enviar alerta por correo si es NON-COMPLIANT
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: 587
+        username: "{{ mail_from }}"
+        password: "{{ mail_password }}"
+        to: "{{ mail_to }}"
+        from: "{{ mail_from }}"
+        subject: "[{{ 'ALERTA' if 'NON-COMPLIANT' in acs_status else 'INFO' }}] Cumplimiento ACS Sensor - {{ cluster_name }}"
+        body: "{{ report_text }}"
+        secure: starttls
+      when: send_mail | bool
