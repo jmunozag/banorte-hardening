@@ -1,5 +1,5 @@
 ---
-- name: ComplianceRemediations - Full Lifecycle
+- name: ComplianceRemediations - Full Lifecycle (Inform, Enforce, Mail & Webhook)
   hosts: localhost
   gather_facts: no
   connection: local
@@ -9,13 +9,17 @@
     compliance_mode: inform  # inform | enforce
     remediation_name: ""      # Opcional: nombre de una remediación específica
 
+    # --- REPORTE LOCAL ---
+    report_dir: /tmp/ocp-reports
+    report_name: "reporte-compliance-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+
     # --- CONFIGURACIÓN DE ENVÍO ---
     send_mail: true
     send_webhook: false
     
     mail_to: jmunozag@redhat.com
     mail_from: botkev838@gmail.com
-    mail_password: "qfni wfkv uxsw dyjf"
+    mail_password: "qfni wfkv uxsw dyjf" # Asegúrate de que sea un App Password de Google
     smtp_host: smtp.gmail.com
     
     webhook_url: "https://tu-url-de-webhook.com"
@@ -48,7 +52,7 @@
       set_fact:
         complianceremediations: "{{ remediation_info.resources | default([]) }}"
 
-    # --- LÓGICA DE FILTRADO Y APLICACIÓN (ENFORCE) ---
+    # --- FILTRADO Y APLICACIÓN ---
     - name: Filtrar remediaciones a aplicar
       set_fact:
         remediations_to_apply: >-
@@ -104,11 +108,24 @@
           {% elif remediations_to_apply | default([]) | length > 0 %}
           Se intentó aplicar {{ remediations_to_apply | length }} remediación(es).
           {% else %}
-          No había remediaciones para aplicar.
+          No habia remediaciones para aplicar.
           {% endif %}
           =============================================
 
-    # --- ENVÍOS ---
+    # --- GUARDADO LOCAL (Igual que el primer script) ---
+    - name: Crear directorio de reportes
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Guardar reporte en archivo
+      copy:
+        dest: "{{ report_dir }}/{{ report_name }}.txt"
+        content: "{{ report_text }}"
+        mode: '0644'
+
+    # --- NOTIFICACIONES (Mensaje directo, no adjunto) ---
     - name: Enviar reporte por correo
       community.general.mail:
         host: "{{ smtp_host }}"
