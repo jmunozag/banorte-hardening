@@ -19,40 +19,35 @@
     report_dir: /tmp/ocp-reports
     report_name: "reporte-compliance-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
 
-    # --- CAPTURA DE CREDENCIALES ---
-    # Forzamos la obtención de las variables que inyecta el Controller
+    # --- CAPTURA DE CREDENCIALES DESDE AAP ---
     dest_host: "{{ lookup('env', 'K8S_AUTH_HOST') }}"
     dest_token: "{{ lookup('env', 'K8S_AUTH_API_KEY') }}"
 
   tasks:
-    - name: Verificar inyección de credenciales
+    - name: Validar presencia de credenciales de AAP
       fail:
-        msg: "ERROR: No se detectó la credencial de OpenShift en el Job Template."
+        msg: "ERROR: El Job Template no tiene una credencial de OpenShift asociada."
       when: dest_host == "" or dest_token == ""
-
-    - name: Debug - Datos de conexión (Solo para troubleshooting)
-      debug:
-        msg: "Conectando a la API: {{ dest_host }}"
 
     - name: Obtener infraestructura del cluster DESTINO
       kubernetes.core.k8s_info:
+        # FORZADO: Ignorar cualquier configuración local del runner
+        kubeconfig: /dev/null 
         host: "{{ dest_host }}"
         api_key: "{{ dest_token }}"
         validate_certs: no
-        verify_ssl: no
-        # Importante: Esto ignora cualquier config de kubeconfig local
         api_version: config.openshift.io/v1
         kind: Infrastructure
         name: cluster
       register: infra_info
-      failed_when: infra_info.resources | length == 0
 
     - name: Definir nombre del cluster destino
       set_fact:
-        cluster_name: "{{ infra_info.resources[0].status.infrastructureName }}"
+        cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('ERROR-DE-CONEXION') }}"
 
     - name: Obtener ComplianceRemediations del cluster DESTINO
       kubernetes.core.k8s_info:
+        kubeconfig: /dev/null
         host: "{{ dest_host }}"
         api_key: "{{ dest_token }}"
         validate_certs: no
@@ -70,6 +65,7 @@
 
     - name: Aplicar ComplianceRemediations (Enforce) en cluster remoto
       kubernetes.core.k8s:
+        kubeconfig: /dev/null
         host: "{{ dest_host }}"
         api_key: "{{ dest_token }}"
         validate_certs: no
@@ -92,20 +88,24 @@
         report_text: |
           REPORTE DE COMPLIANCE - CLUSTER REMOTO
           =============================================
-          Cluster: {{ cluster_name }}
-          API Endpoint: {{ dest_host }}
+          Cluster Detectado: {{ cluster_name }}
+          API Endpoint usado: {{ dest_host }}
           Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
-          Total Remediaciones: {{ complianceremediations | length }}
+          Total Remediaciones encontradas: {{ complianceremediations | length }}
 
           DETALLE:
+          {% if complianceremediations | length > 0 %}
           {% for r in complianceremediations %}
           - {{ r.metadata.name }} ({{ r.status.applicationState | default('N/A') }})
           {% endfor %}
+          {% else %}
+          No se encontraron remediaciones. Verifique que el escaneo haya finalizado.
+          {% endif %}
           =============================================
 
     - name: Guardar archivo y enviar correo
       block:
-        - name: Asegurar directorio
+        - name: Crear directorio
           file:
             path: "{{ report_dir }}"
             state: directory
