@@ -1,12 +1,17 @@
 ---
-- name: ComplianceRemediations - Version Original Limpia (Post-Enforce Update)
+- name: ComplianceRemediations - Survey Ready Version
   hosts: localhost
   gather_facts: no
   connection: local
 
   vars:
+    # Estas variables vendrán del Survey del AAP
+    # compliance_mode: "inform" o "enforce"
+    # remediation_name: "nombre1, nombre2, nombre3" (TextArea)
+    
     report_dir: /tmp/ocp-reports
     report_name: "reporte-compliance-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+    
     send_mail: true
     mail_to: jmunozag@redhat.com
     mail_from: botkev838@gmail.com
@@ -18,7 +23,7 @@
       assert:
         that:
           - compliance_mode in ['inform', 'enforce']
-        fail_msg: "compliance_mode debe ser 'inform' o 'enforce'"
+        fail_msg: "El modo debe ser 'inform' o 'enforce'"
 
     - name: Obtener infraestructura del cluster
       kubernetes.core.k8s_info:
@@ -31,18 +36,39 @@
       set_fact:
         cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('DESCONOCIDO') }}"
 
-    # 1. Primera consulta para saber qué aplicar
-    - name: Obtener ComplianceRemediations (Estado inicial)
+    - name: Obtener ComplianceRemediations iniciales
       kubernetes.core.k8s_info:
         api_version: compliance.openshift.io/v1alpha1
         kind: ComplianceRemediation
       register: remediation_info_initial
 
-    - name: Filtrar remediaciones
+    # =========================================================
+    # LÓGICA DE FILTRADO PARA SURVEY (Soporta comas y saltos de línea)
+    # =========================================================
+    - name: Procesar y filtrar remediaciones seleccionadas
       set_fact:
-        remediations_to_apply: "{{ remediation_info_initial.resources | default([]) | selectattr('metadata.name', 'equalto', remediation_name) | list if remediation_name != '' else remediation_info_initial.resources | default([]) }}"
+        target_list: >-
+          {{ 
+            remediation_name.replace('\n', ',').split(',') 
+            | map('trim') 
+            | reject('equalto', '') 
+            | list 
+          }}
+      when: remediation_name | trim != ''
 
-    # 2. Aplicar remediaciones (Enforce)
+    - name: Definir remediaciones a aplicar
+      set_fact:
+        remediations_to_apply: >-
+          {{
+            remediation_info_initial.resources 
+            | selectattr('metadata.name', 'in', target_list) 
+            | list if remediation_name | trim != '' 
+            else remediation_info_initial.resources | default([])
+          }}
+
+    # =========================================================
+    # APLICACIÓN (ENFORCE)
+    # =========================================================
     - name: Aplicar ComplianceRemediations (Enforce)
       kubernetes.core.k8s:
         state: present
@@ -59,56 +85,63 @@
         - compliance_mode == 'enforce'
         - remediations_to_apply | length > 0
 
-    # 3. CRÍTICO: Nueva consulta para obtener el estado ACTUALIZADO tras el Enforce
-    - name: Obtener ComplianceRemediations (Estado final post-aplicación)
+    - name: Esperar brevemente actualización del estado
+      pause:
+        seconds: 8
+      when: compliance_mode == 'enforce' and remediations_to_apply | length > 0
+
+    # =========================================================
+    # REPORTE FINAL ACTUALIZADO
+    # =========================================================
+    - name: Obtener estado final de las remediaciones
       kubernetes.core.k8s_info:
         api_version: compliance.openshift.io/v1alpha1
         kind: ComplianceRemediation
       register: remediation_info_final
 
-    - name: Definir lista de remediaciones final para el reporte
-      set_fact:
-        complianceremediations: "{{ remediation_info_final.resources | default([]) }}"
-
-    # 4. Construir reporte con la información actualizada
-    - name: Construir reporte
+    - name: Construir texto del reporte
       set_fact:
         report_text: |
           REPORTE DE COMPLIANCE REMEDIATIONS - OPENSHIFT
           =============================================
           Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
           Cluster: {{ cluster_name }}
-          Modo de ejecución: {{ compliance_mode }}
-          Total detectadas: {{ complianceremediations | length }}
+          Modo: {{ compliance_mode }}
+          Total detectadas: {{ remediation_info_final.resources | length }}
 
-          LISTADO DE REMEDIACIONES (ESTADO ACTUAL):
+          DETALLE DE POLÍTICAS EN EL CLUSTER:
           ---------------------------------------------
-          {% if complianceremediations | length == 0 %}
-          No se encontraron ComplianceRemediations.
+          {% if remediation_info_final.resources | length == 0 %}
+          No se encontraron remediaciones.
           {% else %}
-          {% for r in complianceremediations %}
-          Nombre: {{ r.metadata.name }}
-          Estado: {{ r.status.applicationState | default('PROCESANDO') }}
-          Namespace: {{ r.metadata.namespace }}
+          {% for r in remediation_info_final.resources %}
+          - Nombre: {{ r.metadata.name }}
+            Estado: {{ r.status.applicationState | default('PROCESANDO/PENDIENTE') }}
+            Namespace: {{ r.metadata.namespace }}
+            {% if target_list is defined and r.metadata.name in target_list %}
+            ACCIONADA: SI (Solicitada por Survey)
+            {% elif remediation_name | trim == '' %}
+            ACCIONADA: SI (Procesando todas)
+            {% else %}
+            ACCIONADA: NO (Omitida)
+            {% endif %}
           ---------------------------------------------
           {% endfor %}
           {% endif %}
 
-          RESUMEN:
+          RESUMEN DE EJECUCIÓN:
           {% if compliance_mode == 'enforce' %}
-          Se ha solicitado la aplicación de {{ remediations_to_apply | length }} política(s).
+          Se proceso la aplicacion de {{ remediations_to_apply | length }} remediacion(es).
           {% else %}
-          Ejecución en modo INFORMATIVO. No se aplicaron cambios.
+          Modo informativo. No se realizaron cambios.
           {% endif %}
+          =============================================
 
-    - name: Crear directorio y guardar archivo
+    - name: Crear directorio y guardar TXT local
       block:
-        - name: Crear directorio
-          file:
-            path: "{{ report_dir }}"
-            state: directory
-            mode: '0755'
-        - name: Guardar reporte TXT
+        - name: Directorio
+          file: { path: "{{ report_dir }}", state: directory, mode: '0755' }
+        - name: Guardar archivo
           copy:
             dest: "{{ report_dir }}/{{ report_name }}.txt"
             content: "{{ report_text }}"
@@ -122,7 +155,7 @@
         password: "{{ mail_password }}"
         to: "{{ mail_to }}"
         from: "{{ mail_from }}"
-        subject: "Reporte Compliance Actualizado: {{ cluster_name }}"
+        subject: "Reporte Compliance: {{ cluster_name }} ({{ compliance_mode }})"
         body: "{{ report_text }}"
         secure: starttls
       when: send_mail | bool
