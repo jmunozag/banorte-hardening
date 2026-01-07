@@ -10,7 +10,6 @@
     report_dir: /tmp/ocp-reports
     report_name: "reporte-compliance-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
     send_mail: true
-    send_webhook: false
     
     mail_to: jmunozag@redhat.com
     mail_from: botkev838@gmail.com
@@ -35,22 +34,13 @@
         kind: ComplianceRemediation
       register: remediation_info
 
-    - name: Debug - Cantidad de remediaciones encontradas
-      debug:
-        msg: "Se encontraron {{ remediation_info.resources | length }} remediaciones."
-
-    - name: Definir lista de remediaciones
+    - name: Definir lista base de remediaciones
       set_fact:
         complianceremediations: "{{ remediation_info.resources | default([]) }}"
 
-    - name: Filtrar remediaciones a aplicar
+    - name: Filtrar remediaciones (Lista específica o todas)
       set_fact:
-        remediations_to_apply: >-
-          {% if remediation_name | length > 0 %}
-          {{ complianceremediations | selectattr('metadata.name', 'equalto', remediation_name) | list }}
-          {% else %}
-          {{ complianceremediations }}
-          {% endif %}
+        remediations_to_apply: "{{ complianceremediations | selectattr('metadata.name', 'equalto', remediation_name) | list if remediation_name != '' else complianceremediations }}"
 
     - name: Aplicar ComplianceRemediations (Enforce)
       kubernetes.core.k8s:
@@ -78,7 +68,7 @@
           Modo de ejecución: {{ compliance_mode }}
           Total detectadas: {{ complianceremediations | length }}
 
-          DETALLE DE REMEDIACIONES:
+          DETALLE DE REMEDIACIONES ENCONTRADAS:
           -------------------------
           {% if complianceremediations | length > 0 %}
           {% for r in complianceremediations %}
@@ -87,7 +77,7 @@
             Namespace: {{ r.metadata.namespace }}
           {% endfor %}
           {% else %}
-          No se encontraron remediaciones en el cluster.
+          No se encontraron objetos ComplianceRemediation en el cluster.
           {% endif %}
 
           RESULTADO DE LA ACCIÓN:
@@ -97,15 +87,22 @@
           {% elif remediations_to_apply | length > 0 %}
           Se proceso la aplicacion de {{ remediations_to_apply | length }} remediacion(es).
           {% else %}
-          No habia remediaciones pendientes para aplicar.
+          No habia remediaciones para aplicar.
           {% endif %}
           =============================================
 
-    - name: Guardar reporte en archivo
-      copy:
-        dest: "{{ report_dir }}/{{ report_name }}.txt"
-        content: "{{ report_text }}"
-        mode: '0644'
+    - name: Crear directorio y guardar archivo
+      block:
+        - name: Crear directorio
+          file:
+            path: "{{ report_dir }}"
+            state: directory
+            mode: '0755'
+        - name: Guardar reporte
+          copy:
+            dest: "{{ report_dir }}/{{ report_name }}.txt"
+            content: "{{ report_text }}"
+            mode: '0644'
 
     - name: Enviar reporte por correo
       community.general.mail:
