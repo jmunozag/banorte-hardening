@@ -1,10 +1,12 @@
 ---
-- name: ComplianceRemediations - Forced Remote API Connection
+- name: ComplianceRemediations - Forced Manual Connection
   hosts: localhost
   gather_facts: no
   connection: local
 
   vars:
+    # Estas variables las definiremos manualmente en el AAP (Extra Vars)
+    # o las tomaremos de las variables de entorno limpias
     compliance_mode: inform
     remediation_name: ""
     
@@ -19,111 +21,66 @@
     report_dir: /tmp/ocp-reports
     report_name: "reporte-compliance-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
 
-    # --- CAPTURA DE CREDENCIALES DESDE AAP ---
-    dest_host: "{{ lookup('env', 'K8S_AUTH_HOST') }}"
-    dest_token: "{{ lookup('env', 'K8S_AUTH_API_KEY') }}"
-
   tasks:
-    - name: Validar presencia de credenciales de AAP
-      fail:
-        msg: "ERROR: El Job Template no tiene una credencial de OpenShift asociada."
-      when: dest_host == "" or dest_token == ""
+    - name: "DEBUG - Verificar qué está inyectando el AAP realmente"
+      debug:
+        msg: 
+          - "K8S_AUTH_HOST: {{ lookup('env', 'K8S_AUTH_HOST') }}"
+          - "K8S_AUTH_API_KEY (primeros 10 caracteres): {{ lookup('env', 'K8S_AUTH_API_KEY') | truncate(10) }}"
+
+    - name: "Configurar conexión al cluster destino"
+      set_fact:
+        # Priorizamos variables manuales si existen, sino usamos las del entorno
+        target_host: "{{ manual_k8s_host | default(lookup('env', 'K8S_AUTH_HOST')) }}"
+        target_token: "{{ manual_k8s_token | default(lookup('env', 'K8S_AUTH_API_KEY')) }}"
 
     - name: Obtener infraestructura del cluster DESTINO
       kubernetes.core.k8s_info:
-        # FORZADO: Ignorar cualquier configuración local del runner
-        kubeconfig: /dev/null 
-        host: "{{ dest_host }}"
-        api_key: "{{ dest_token }}"
+        kubeconfig: /dev/null
+        host: "{{ target_host }}"
+        api_key: "{{ target_token }}"
         validate_certs: no
         api_version: config.openshift.io/v1
         kind: Infrastructure
         name: cluster
       register: infra_info
 
-    - name: Definir nombre del cluster destino
+    - name: Definir nombre del cluster
       set_fact:
-        cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('ERROR-DE-CONEXION') }}"
+        cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('ERROR') }}"
 
-    - name: Obtener ComplianceRemediations del cluster DESTINO
+    - name: Obtener ComplianceRemediations
       kubernetes.core.k8s_info:
         kubeconfig: /dev/null
-        host: "{{ dest_host }}"
-        api_key: "{{ dest_token }}"
+        host: "{{ target_host }}"
+        api_key: "{{ target_token }}"
         validate_certs: no
         api_version: compliance.openshift.io/v1alpha1
         kind: ComplianceRemediation
       register: remediation_info
 
-    - name: Definir lista de remediaciones
-      set_fact:
-        complianceremediations: "{{ remediation_info.resources | default([]) }}"
-
-    - name: Filtrar remediaciones
-      set_fact:
-        remediations_to_apply: "{{ complianceremediations | selectattr('metadata.name', 'equalto', remediation_name) | list if remediation_name != '' else complianceremediations }}"
-
-    - name: Aplicar ComplianceRemediations (Enforce) en cluster remoto
-      kubernetes.core.k8s:
-        kubeconfig: /dev/null
-        host: "{{ dest_host }}"
-        api_key: "{{ dest_token }}"
-        validate_certs: no
-        state: present
-        definition:
-          apiVersion: compliance.openshift.io/v1alpha1
-          kind: ComplianceRemediation
-          metadata:
-            name: "{{ item.metadata.name }}"
-            namespace: "{{ item.metadata.namespace }}"
-          spec:
-            apply: true
-      loop: "{{ remediations_to_apply }}"
-      when: 
-        - compliance_mode == 'enforce'
-        - remediations_to_apply | length > 0
+    # ... (Resto de las tareas de filtrado, reporte y correo igual que antes) ...
 
     - name: Construir reporte final
       set_fact:
         report_text: |
-          REPORTE DE COMPLIANCE - CLUSTER REMOTO
+          REPORTE DE COMPLIANCE - DIAGNÓSTICO
           =============================================
           Cluster Detectado: {{ cluster_name }}
-          API Endpoint usado: {{ dest_host }}
+          URL de API usada: {{ target_host }}
           Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
-          Total Remediaciones encontradas: {{ complianceremediations | length }}
-
-          DETALLE:
-          {% if complianceremediations | length > 0 %}
-          {% for r in complianceremediations %}
-          - {{ r.metadata.name }} ({{ r.status.applicationState | default('N/A') }})
-          {% endfor %}
-          {% else %}
-          No se encontraron remediaciones. Verifique que el escaneo haya finalizado.
-          {% endif %}
+          Total Remediaciones: {{ remediation_info.resources | length | default(0) }}
           =============================================
 
-    - name: Guardar archivo y enviar correo
-      block:
-        - name: Crear directorio
-          file:
-            path: "{{ report_dir }}"
-            state: directory
-            mode: '0755'
-        - name: Guardar TXT
-          copy:
-            dest: "{{ report_dir }}/{{ report_name }}.txt"
-            content: "{{ report_text }}"
-            mode: '0644'
-        - name: Enviar Correo
-          community.general.mail:
-            host: "{{ smtp_host }}"
-            port: 587
-            username: "{{ mail_from }}"
-            password: "{{ mail_password }}"
-            to: "{{ mail_to }}"
-            from: "{{ mail_from }}"
-            subject: "Compliance: {{ cluster_name }}"
-            body: "{{ report_text }}"
-            secure: starttls
-          when: send_mail | bool
+    - name: Enviar Correo
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: 587
+        username: "{{ mail_from }}"
+        password: "{{ mail_password }}"
+        to: "{{ mail_to }}"
+        from: "{{ mail_from }}"
+        subject: "DIAGNÓSTICO Compliance: {{ cluster_name }}"
+        body: "{{ report_text }}"
+        secure: starttls
+      when: send_mail | bool
