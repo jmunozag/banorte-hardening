@@ -1,19 +1,27 @@
 ---
-- name: Reporte de ComplianceRemediations OpenShift
+- name: ComplianceRemediations - Inform / Enforce
   hosts: localhost
   gather_facts: no
   connection: local
 
   vars:
-    # =========================
+    # =========================================================
+    # MODO DE EJECUCIÓN
+    # inform  -> solo reporta
+    # enforce -> aplica remediaciones
+    # =========================================================
+    compliance_mode: inform          # inform | enforce
+    remediation_name: ""             # opcional, solo para enforce
+
+    # =========================================================
     # REPORTE
-    # =========================
+    # =========================================================
     report_dir: /tmp/ocp-reports
     report_name: "reporte-compliance-remediations-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
 
-    # =========================
+    # =========================================================
     # ENVÍO DE CORREO
-    # =========================
+    # =========================================================
 
     send_mail: true
     mail_to: jmunozag@redhat.com
@@ -24,7 +32,17 @@
   tasks:
 
     # =========================================================
-    # OBTENER NOMBRE DEL CLUSTER
+    # VALIDACIÓN DE MODO
+    # =========================================================
+
+    - name: Validar modo de ejecución
+      assert:
+        that:
+          - compliance_mode in ['inform', 'enforce']
+        fail_msg: "compliance_mode debe ser 'inform' o 'enforce'"
+
+    # =========================================================
+    # NOMBRE DEL CLUSTER
     # =========================================================
 
     - name: Obtener infraestructura del cluster
@@ -46,7 +64,7 @@
     # OBTENER COMPLIANCE REMEDIATIONS
     # =========================================================
 
-    - name: Obtener ComplianceRemediations del cluster
+    - name: Obtener ComplianceRemediations
       kubernetes.core.k8s_info:
         api_version: compliance.openshift.io/v1alpha1
         kind: ComplianceRemediation
@@ -57,30 +75,88 @@
         complianceremediations: "{{ remediation_info.resources | default([]) }}"
 
     # =========================================================
+    # FILTRAR REMEDIACIONES (SI SE INDICA UNA ESPECÍFICA)
+    # =========================================================
+
+    - name: Filtrar remediaciones por nombre
+      set_fact:
+        remediations_to_apply: >-
+          {{
+            complianceremediations
+            | selectattr('metadata.name', 'equalto', remediation_name)
+            | list
+          }}
+      when:
+        - compliance_mode == 'enforce'
+        - remediation_name | length > 0
+
+    - name: Usar todas las remediaciones si no se especifica nombre
+      set_fact:
+        remediations_to_apply: "{{ complianceremediations }}"
+      when:
+        - compliance_mode == 'enforce'
+        - remediation_name | length == 0
+
+    # =========================================================
+    # APLICAR REMEDIACIONES (ENFORCE)
+    # =========================================================
+
+    - name: Aplicar ComplianceRemediations
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: compliance.openshift.io/v1alpha1
+          kind: ComplianceRemediation
+          metadata:
+            name: "{{ item.metadata.name }}"
+            namespace: "{{ item.metadata.namespace }}"
+          spec:
+            apply: true
+      loop: "{{ remediations_to_apply }}"
+      when:
+        - compliance_mode == 'enforce'
+        - remediations_to_apply | length > 0
+
+    # =========================================================
     # CONSTRUIR REPORTE
     # =========================================================
 
-    - name: Construir reporte de ComplianceRemediations
+    - name: Construir reporte
       set_fact:
         report_text: |
           REPORTE DE COMPLIANCE REMEDIATIONS - OPENSHIFT
           Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
           Cluster: {{ cluster_name }}
+          Modo de ejecución: {{ compliance_mode }}
 
-          Total de remediaciones encontradas: {{ complianceremediations | length }}
+          Total de remediaciones detectadas: {{ complianceremediations | length }}
 
           ---------------------------------
           LISTADO DE REMEDIACIONES
           ---------------------------------
           {% if complianceremediations | length == 0 %}
-          No se encontraron ComplianceRemediations en el cluster.
+          No se encontraron ComplianceRemediations.
           {% else %}
           {% for r in complianceremediations %}
           Nombre: {{ r.metadata.name }}
           Namespace: {{ r.metadata.namespace }}
           Estado aplicación: {{ r.status.applicationState | default('DESCONOCIDO') }}
-          Tipo: {{ r.spec.type | default('N/A') }}
+          Apply flag: {{ r.spec.apply | default(false) }}
           ---------------------------------
+          {% endfor %}
+          {% endif %}
+
+          ---------------------------------
+          RESULTADO ENFORCE
+          ---------------------------------
+          {% if compliance_mode == 'inform' %}
+          Modo informativo. No se aplicaron cambios.
+          {% elif remediations_to_apply | length == 0 %}
+          No se aplicaron remediaciones.
+          {% else %}
+          Remediaciones aplicadas:
+          {% for r in remediations_to_apply %}
+          - {{ r.metadata.name }}
           {% endfor %}
           {% endif %}
 
@@ -94,7 +170,7 @@
         state: directory
         mode: '0755'
 
-    - name: Guardar reporte en archivo
+    - name: Guardar reporte
       copy:
         dest: "{{ report_dir }}/{{ report_name }}.txt"
         content: "{{ report_text }}"
@@ -112,6 +188,6 @@
         password: "{{ mail_password }}"
         to: "{{ mail_to }}"
         from: "{{ mail_from }}"
-        subject: "Reporte ComplianceRemediations OpenShift - {{ cluster_name }}"
+        subject: "ComplianceRemediations OpenShift ({{ compliance_mode }}) - {{ cluster_name }}"
         body: "{{ report_text }}"
       when: send_mail
