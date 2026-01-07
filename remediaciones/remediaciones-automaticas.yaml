@@ -1,23 +1,46 @@
 ---
-- name: Gestión de ComplianceRemediations OpenShift
+- name: Reporte de ComplianceRemediations OpenShift
   hosts: localhost
   gather_facts: no
   connection: local
 
   vars:
-    mode: inform            # inform | enforce
-    remediation_names: []   # Lista opcional de remediaciones a aplicar
+    # =========================
+    # REPORTE
+    # =========================
+    report_dir: /tmp/ocp-reports
+    report_name: "reporte-compliance-remediations-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+
+    # =========================
+    # ENVÍO DE CORREO
+    # =========================
+
+    send_mail: true
+    mail_to: jmunozag@redhat.com
+    mail_from: botkev838@gmail.com
+    mail_password: "qfni wfkv uxsw dyjf"
+    smtp_host: smtp.gmail.com
 
   tasks:
 
     # =========================================================
-    # VALIDACIONES INICIALES
+    # OBTENER NOMBRE DEL CLUSTER
     # =========================================================
 
-    - name: Validar modo de ejecución
-      fail:
-        msg: "El modo debe ser 'inform' o 'enforce'"
-      when: mode not in ['inform', 'enforce']
+    - name: Obtener infraestructura del cluster
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: Infrastructure
+        name: cluster
+      register: infra_info
+
+    - name: Definir nombre del cluster
+      set_fact:
+        cluster_name: >-
+          {{
+            infra_info.resources[0].status.infrastructureName
+            | default('DESCONOCIDO')
+          }}
 
     # =========================================================
     # OBTENER COMPLIANCE REMEDIATIONS
@@ -31,66 +54,64 @@
 
     - name: Definir lista de remediaciones
       set_fact:
-        all_remediations: "{{ remediation_info.resources | default([]) }}"
+        complianceremediations: "{{ remediation_info.resources | default([]) }}"
 
-    - name: Filtrar remediaciones objetivo
+    # =========================================================
+    # CONSTRUIR REPORTE
+    # =========================================================
+
+    - name: Construir reporte de ComplianceRemediations
       set_fact:
-        target_remediations: >-
-          {{
-            all_remediations
-            if remediation_names | length == 0
-            else all_remediations
-                 | selectattr('metadata.name', 'in', remediation_names)
-                 | list
-          }}
+        report_text: |
+          REPORTE DE COMPLIANCE REMEDIATIONS - OPENSHIFT
+          Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
+          Cluster: {{ cluster_name }}
 
-    # =========================================================
-    # MODO INFORM
-    # =========================================================
+          Total de remediaciones encontradas: {{ complianceremediations | length }}
 
-    - name: Mostrar ComplianceRemediations disponibles
-      debug:
-        msg: |
-          COMPLIANCE REMEDIATIONS DISPONIBLES:
-          {% for r in all_remediations %}
-          - {{ r.metadata.name }}
-            Namespace: {{ r.metadata.namespace }}
-            Estado aplicado: {{ r.status.applicationState | default('N/A') }}
+          ---------------------------------
+          LISTADO DE REMEDIACIONES
+          ---------------------------------
+          {% if complianceremediations | length == 0 %}
+          No se encontraron ComplianceRemediations en el cluster.
+          {% else %}
+          {% for r in complianceremediations %}
+          Nombre: {{ r.metadata.name }}
+          Namespace: {{ r.metadata.namespace }}
+          Estado aplicación: {{ r.status.applicationState | default('DESCONOCIDO') }}
+          Tipo: {{ r.spec.type | default('N/A') }}
+          ---------------------------------
           {% endfor %}
-      when: mode == 'inform'
+          {% endif %}
 
     # =========================================================
-    # MODO ENFORCE
+    # GUARDAR REPORTE
     # =========================================================
 
-    - name: Validar remediaciones a ejecutar
-      fail:
-        msg: "No se encontraron ComplianceRemediations para aplicar"
-      when:
-        - mode == 'enforce'
-        - target_remediations | length == 0
+    - name: Crear directorio de reportes
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
 
-    - name: Aplicar ComplianceRemediations (enforce)
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: compliance.openshift.io/v1alpha1
-          kind: ComplianceRemediation
-          metadata:
-            name: "{{ item.metadata.name }}"
-            namespace: "{{ item.metadata.namespace }}"
-          spec:
-            apply: true
-      loop: "{{ target_remediations }}"
-      loop_control:
-        label: "{{ item.metadata.name }}"
-      when: mode == 'enforce'
+    - name: Guardar reporte en archivo
+      copy:
+        dest: "{{ report_dir }}/{{ report_name }}.txt"
+        content: "{{ report_text }}"
+        mode: '0644'
 
-    - name: Confirmación de remediaciones aplicadas
-      debug:
-        msg: |
-          REMEDIACIONES EJECUTADAS:
-          {% for r in target_remediations %}
-          - {{ r.metadata.name }}
-          {% endfor %}
-      when: mode == 'enforce'
+    # =========================================================
+    # ENVÍO POR CORREO
+    # =========================================================
+
+    - name: Enviar reporte por correo
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: "{{ smtp_port }}"
+        username: "{{ mail_from }}"
+        password: "{{ mail_password }}"
+        to: "{{ mail_to }}"
+        from: "{{ mail_from }}"
+        subject: "Reporte ComplianceRemediations OpenShift - {{ cluster_name }}"
+        body: "{{ report_text }}"
+      when: send_mail
