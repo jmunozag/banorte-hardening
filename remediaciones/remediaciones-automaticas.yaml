@@ -1,36 +1,23 @@
 ---
-- name: ComplianceRemediations - Full Lifecycle (Inform, Enforce, Mail & Webhook)
+- name: ComplianceRemediations - Full Lifecycle
   hosts: localhost
   gather_facts: no
   connection: local
 
   vars:
-    # --- MODO DE EJECUCIÓN ---
-    compliance_mode: inform  # inform | enforce
-    remediation_name: ""      # Opcional: nombre de una remediación específica
-
-    # --- REPORTE LOCAL ---
+    compliance_mode: inform
+    remediation_name: ""
     report_dir: /tmp/ocp-reports
     report_name: "reporte-compliance-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
-
-    # --- CONFIGURACIÓN DE ENVÍO ---
     send_mail: true
     send_webhook: false
     
     mail_to: jmunozag@redhat.com
     mail_from: botkev838@gmail.com
-    mail_password: "qfni wfkv uxsw dyjf" # Asegúrate de que sea un App Password de Google
+    mail_password: "qfni wfkv uxsw dyjf"
     smtp_host: smtp.gmail.com
-    
-    webhook_url: "https://tu-url-de-webhook.com"
 
   tasks:
-    - name: Validar modo de ejecución
-      assert:
-        that:
-          - compliance_mode in ['inform', 'enforce']
-        fail_msg: "compliance_mode debe ser 'inform' o 'enforce'"
-
     - name: Obtener infraestructura del cluster
       kubernetes.core.k8s_info:
         api_version: config.openshift.io/v1
@@ -48,21 +35,22 @@
         kind: ComplianceRemediation
       register: remediation_info
 
+    - name: Debug - Cantidad de remediaciones encontradas
+      debug:
+        msg: "Se encontraron {{ remediation_info.resources | length }} remediaciones."
+
     - name: Definir lista de remediaciones
       set_fact:
         complianceremediations: "{{ remediation_info.resources | default([]) }}"
 
-    # --- FILTRADO Y APLICACIÓN ---
     - name: Filtrar remediaciones a aplicar
       set_fact:
         remediations_to_apply: >-
-          {{
-            complianceremediations 
-            | selectattr('metadata.name', 'equalto', remediation_name) 
-            | list if remediation_name | length > 0 
-            else complianceremediations
-          }}
-      when: compliance_mode == 'enforce'
+          {% if remediation_name | length > 0 %}
+          {{ complianceremediations | selectattr('metadata.name', 'equalto', remediation_name) | list }}
+          {% else %}
+          {{ complianceremediations }}
+          {% endif %}
 
     - name: Aplicar ComplianceRemediations (Enforce)
       kubernetes.core.k8s:
@@ -75,12 +63,11 @@
             namespace: "{{ item.metadata.namespace }}"
           spec:
             apply: true
-      loop: "{{ remediations_to_apply | default([]) }}"
+      loop: "{{ remediations_to_apply }}"
       when: 
         - compliance_mode == 'enforce'
         - remediations_to_apply | length > 0
 
-    # --- CONSTRUCCIÓN DEL REPORTE ---
     - name: Construir reporte en texto plano
       set_fact:
         report_text: |
@@ -92,32 +79,27 @@
           Total detectadas: {{ complianceremediations | length }}
 
           DETALLE DE REMEDIACIONES:
-          {% if complianceremediations | length == 0 %}
-          No se encontraron remediaciones.
-          {% else %}
+          -------------------------
+          {% if complianceremediations | length > 0 %}
           {% for r in complianceremediations %}
           - Nombre: {{ r.metadata.name }}
             Estado: {{ r.status.applicationState | default('N/A') }}
             Namespace: {{ r.metadata.namespace }}
           {% endfor %}
+          {% else %}
+          No se encontraron remediaciones en el cluster.
           {% endif %}
 
           RESULTADO DE LA ACCIÓN:
+          -------------------------
           {% if compliance_mode == 'inform' %}
           Modo informativo: No se realizaron cambios.
-          {% elif remediations_to_apply | default([]) | length > 0 %}
-          Se intentó aplicar {{ remediations_to_apply | length }} remediación(es).
+          {% elif remediations_to_apply | length > 0 %}
+          Se proceso la aplicacion de {{ remediations_to_apply | length }} remediacion(es).
           {% else %}
-          No habia remediaciones para aplicar.
+          No habia remediaciones pendientes para aplicar.
           {% endif %}
           =============================================
-
-    # --- GUARDADO LOCAL (Igual que el primer script) ---
-    - name: Crear directorio de reportes
-      file:
-        path: "{{ report_dir }}"
-        state: directory
-        mode: '0755'
 
     - name: Guardar reporte en archivo
       copy:
@@ -125,7 +107,6 @@
         content: "{{ report_text }}"
         mode: '0644'
 
-    # --- NOTIFICACIONES (Mensaje directo, no adjunto) ---
     - name: Enviar reporte por correo
       community.general.mail:
         host: "{{ smtp_host }}"
@@ -138,13 +119,3 @@
         body: "{{ report_text }}"
         secure: starttls
       when: send_mail | bool
-
-    - name: Enviar reporte por Webhook
-      ansible.builtin.uri:
-        url: "{{ webhook_url }}"
-        method: POST
-        body_format: json
-        body:
-          text: "{{ report_text }}"
-        status_code: [200, 201, 204]
-      when: send_webhook | bool
