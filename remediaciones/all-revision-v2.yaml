@@ -1,4 +1,4 @@
-# FUNCIONAL / PROBADO / SIN VARIABLES EXTERNAS 
+## FUNCIONAL / PROBADO / SIN VARIABLES EXTERNAS 
 ---
 - name: Revisión informativa de controles de seguridad OpenShift y generación de reporte
   hosts: localhost
