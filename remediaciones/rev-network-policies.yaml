@@ -71,7 +71,7 @@
           {% for ns in target_namespaces | sort %}
             {% set ns_policies = all_netpols.resources | selectattr('metadata.namespace', 'equalto', ns) | list %}
             {% if ns_policies | length == 0 %}
-          [ALERTA] Namespace: {{ ns }}
+          Namespace: {{ ns }}
             {% endif %}
           {% endfor %}
           
