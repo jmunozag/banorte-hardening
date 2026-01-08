@@ -9,7 +9,6 @@
     report_dir: /tmp/ocp-reports
     report_name: "reporte-ocp-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
 
-    # CONFIGURACIÓN NOTIFICACIÓN
     send_mail: true
     mail_to: jmunozag@redhat.com
     mail_from: botkev838@gmail.com
@@ -19,12 +18,11 @@
     send_webhook: false
     webhook_url: https://webhook.empresa.cl/ocp/report
 
-    # REGEX PARA NETWORK POLICIES (Omitir sistema y operadores core)
     system_ns_regex: "^(openshift.*|kube.*|default|stackrox)$"
 
   tasks:
     # =========================================================
-    # RECOLECCIÓN DE DATOS DEL CLUSTER
+    # RECOLECCIÓN DE DATOS
     # =========================================================
     - name: "Obtener infraestructura del cluster"
       kubernetes.core.k8s_info:
@@ -46,89 +44,64 @@
         kind: OAuthClient
       register: oauth_clients
 
-    - name: "Obtener todos los Namespaces"
+    - name: "Obtener recursos de Red"
       kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Namespace
-      register: ns_list
+        api_version: "{{ item.api }}"
+        kind: "{{ item.kind }}"
+      loop:
+        - { api: "v1", kind: "Namespace" }
+        - { api: "networking.k8s.io/v1", kind: "NetworkPolicy" }
+      register: net_resources
 
-    - name: "Obtener todas las NetworkPolicies"
+    - name: "Obtener otros recursos de seguridad"
       kubernetes.core.k8s_info:
-        api_version: networking.k8s.io/v1
-        kind: NetworkPolicy
-      register: netpol_list
-
-    - name: "Obtener secreto kubeadmin"
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Secret
-        name: kubeadmin
-        namespace: kube-system
-      register: kubeadmin_info
-
-    - name: "Obtener ClusterLogForwarder"
-      kubernetes.core.k8s_info:
-        api_version: logging.openshift.io/v1
-        kind: ClusterLogForwarder
-        namespace: openshift-logging
-      register: clf_info
-
-    - name: "Verificar ACS Sensor"
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: Deployment
-        name: sensor
-        namespace: stackrox
-      register: acs_sensor_check
-
-    - name: "Verificar CSO Operator"
-      kubernetes.core.k8s_info:
-        api_version: operators.coreos.com/v1alpha1
-        kind: Subscription
-        name: container-security-operator
-        namespace: openshift-operators
-      register: cso_sub
-
-    - name: "Obtener IngressController default"
-      kubernetes.core.k8s_info:
-        api_version: operator.openshift.io/v1
-        kind: IngressController
-        name: default
-        namespace: openshift-ingress-operator
-      register: ingress_info
+        api_version: "{{ item.api }}"
+        kind: "{{ item.kind }}"
+        name: "{{ item.name | default(omit) }}"
+        namespace: "{{ item.ns | default(omit) }}"
+      loop:
+        - { api: "v1", kind: "Secret", name: "kubeadmin", ns: "kube-system" }
+        - { api: "logging.openshift.io/v1", kind: "ClusterLogForwarder", ns: "openshift-logging" }
+        - { api: "apps/v1", kind: "Deployment", name: "sensor", ns: "stackrox" }
+        - { api: "operators.coreos.com/v1alpha1", kind: "Subscription", name: "container-security-operator", ns: "openshift-operators" }
+        - { api: "operator.openshift.io/v1", kind: "IngressController", name: "default", ns: "openshift-ingress-operator" }
+      register: sec_resources
 
     # =========================================================
-    # LÓGICA DE PROCESAMIENTO DE VARIABLES
+    # LÓGICA DE PROCESAMIENTO (FACTS)
     # =========================================================
-    - name: "Setear variables base"
+    - name: "Procesar variables para el reporte"
       set_fact:
         cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('DESCONOCIDO') }}"
+        ns_list: "{{ net_resources.results[0].resources }}"
+        netpol_list: "{{ net_resources.results[1].resources }}"
+        kubeadmin_info: "{{ sec_resources.results[0].resources }}"
+        clf_info: "{{ sec_resources.results[1].resources }}"
+        acs_info: "{{ sec_resources.results[2].resources }}"
+        cso_info: "{{ sec_resources.results[3].resources }}"
+        ingress_info: "{{ sec_resources.results[4].resources }}"
         identity_providers: "{{ oauth_info.resources[0].spec.identityProviders | default([]) }}"
         global_timeout: "{{ oauth_info.resources[0].spec.tokenConfig.accessTokenInactivityTimeout | default('NO CONFIGURADO') }}"
 
-    - name: "Procesar Secciones de Red y OAuth para el Reporte"
+    - name: "Generar Listados de Red y OAuth"
       set_fact:
-        netpol_protegidos: >-
-          {% set target_ns = ns_list.resources | map(attribute='metadata.name') | reject('match', system_ns_regex) | list %}
+        netpol_protegidos: |-
           {% set lines = [] %}
+          {% set target_ns = ns_list | map(attribute='metadata.name') | reject('match', system_ns_regex) | list %}
           {% for ns in target_ns | sort %}
-            {% set ns_pols = netpol_list.resources | selectattr('metadata.namespace', 'equalto', ns) | map(attribute='metadata.name') | list %}
-            {% if ns_pols | length > 0 %}
-              {% set _ = lines.append('    Namespace: ' + ns + ' (Políticas: ' + ns_pols | join(', ') + ')') %}
-            {% endif %}
+            {% set ns_pols = netpol_list | selectattr('metadata.namespace', 'equalto', ns) | map(attribute='metadata.name') | list %}
+            {% if ns_pols | length > 0 %}{% set _ = lines.append('Namespace: ' + ns + ' (Políticas: ' + ns_pols | join(', ') + ')') %}{% endif %}
           {% endfor %}
-          {{ lines | join('\n') if lines | length > 0 else '    No se encontraron namespaces protegidos.' }}
-        netpol_expuestos: >-
-          {% set target_ns = ns_list.resources | map(attribute='metadata.name') | reject('match', system_ns_regex) | list %}
+          {{ lines | join('\n') if lines | length > 0 else 'No se encontraron namespaces protegidos.' }}
+        netpol_expuestos: |-
           {% set lines = [] %}
+          {% set target_ns = ns_list | map(attribute='metadata.name') | reject('match', system_ns_regex) | list %}
           {% for ns in target_ns | sort %}
-            {% set ns_pols = netpol_list.resources | selectattr('metadata.namespace', 'equalto', ns) | list %}
-            {% if ns_pols | length == 0 %}
-              {% set _ = lines.append('    Namespace: ' + ns) %}
-            {% endif %}
+            {% set ns_pols = netpol_list | selectattr('metadata.namespace', 'equalto', ns) | list %}
+            {% if ns_pols | length == 0 %}{% set _ = lines.append('Namespace: ' + ns) %}{% endif %}
           {% endfor %}
-          {{ lines | join('\n') if lines | length > 0 else '    Todos los namespaces de aplicación están protegidos.' }}
-        oauth_clients_detail: >-
+          {{ lines | join('\n') if lines | length > 0 else 'Todos los namespaces están protegidos.' }}
+        oauth_clients_list: |-
           {% set lines = [] %}
           {% for client in oauth_clients.resources | sort(attribute='metadata.name') %}
             {% set c_tout = client.accessTokenInactivityTimeoutSeconds | default('N/A') %}
@@ -137,7 +110,7 @@
           {{ lines | join('\n') }}
 
     # =========================================================
-    # CONSTRUCCIÓN DEL REPORTE FINAL TEXTO PLANO
+    # CONSTRUCCIÓN DEL REPORTE (Ajuste de indentación)
     # =========================================================
     - name: "Construir contenido del reporte"
       set_fact:
@@ -149,34 +122,32 @@
           ---------------------------------
           KUBEADMIN
           Ensure that the kubeadmin secret has been removed - ocp4-pci-dss-4-0-kubeadmin-removed
-          {% if kubeadmin_info.resources | length == 0 %}
+          {% if kubeadmin_info | length == 0 %}
           El secreto kubeadmin NO EXISTE
-          {% elif identity_providers | length == 0 %}
-          El secreto kubeadmin EXISTE - IdentityProvider NO CONFIGURADO
           {% else %}
-          El secreto kubeadmin EXISTE - IdentityProvider CONFIGURADO
+          El secreto kubeadmin EXISTE (IdentityProviders: {{ identity_providers | length }})
           {% endif %}
 
           ---------------------------------
           CLUSTER LOG FORWARDER
           Ensure that Audit Log Forwarding Is Enabled - ocp4-pci-dss-4-0-audit-log-forwarding-enabled
-          {% if clf_info.resources | length == 0 %}
-          La instancia ClusterLogForwarder (CLF) del Operador ClusterLogging NO EXISTE
+          {% if clf_info | length == 0 %}
+          La instancia ClusterLogForwarder (CLF) NO EXISTE
           {% else %}
-          {% set audit_on = clf_info.resources[0].spec.inputs | default([]) | selectattr('type', 'equalto', 'audit') | list | length > 0 %}
-          Instancia: {{ clf_info.resources[0].metadata.name }} - {{ 'CON AUDIT LOGS' if audit_on else 'SIN AUDIT LOGS' }}
+          {% set audit_on = clf_info[0].spec.inputs | default([]) | selectattr('type', 'equalto', 'audit') | list | length > 0 %}
+          Instancia: {{ clf_info[0].metadata.name }} - {{ 'CON AUDIT LOGS' if audit_on else 'SIN AUDIT LOGS' }}
           {% endif %}
 
           ---------------------------------
           INGRESS CONTROLLER TLS
           Ensure that the Ingress Controller only makes use of Strong - ocp4-pci-dss-4-0-ingress-controller-tls-cipher-suites
-          Listado de TLS configurados en ingresscontrollers/default
-          {% if ingress_info.resources | length > 0 %}
-          {% for cipher in ingress_info.resources[0].status.tlsProfile.ciphers | default([]) %}
+          {% if ingress_info | length > 0 %}
+          Listado de TLS configurados en ingresscontrollers/default:
+          {% for cipher in ingress_info[0].status.tlsProfile.ciphers | default([]) %}
           - {{ cipher }}
           {% endfor %}
           {% else %}
-          No se encontró configuración de IngressController/default.
+          No se encontró ingresscontrollers/default
           {% endif %}
 
           ---------------------------------
@@ -184,17 +155,17 @@
           Only Use LDAP-based IdPs with TLS - ocp4-pci-dss-4-0-ocp-no-ldap-insecure
           {% set ldaps = identity_providers | selectattr('type', 'equalto', 'LDAP') | list %}
           {% if ldaps | length == 0 %}
-          Protocolo LDAP NO configurado como IdentityProvider.
+          Protocolo LDAP NO configurado.
           {% else %}
           {% for idp in ldaps %}
-          LDAP Configurado - Nombre: {{ idp.name }} - insecure: {{ idp.ldap.insecure | default(false) }}
+          LDAP: {{ idp.name }} - insecure: {{ idp.ldap.insecure | default(false) }}
           {% endfor %}
           {% endif %}
 
           ---------------------------------
           ACS SENSOR
           Ensure that Advanced Cluster Security (ACS) Sensor is deployed - ocp4-pci-dss-4-0-acs-sensor-exists
-          {{ 'ACS Sensor detectado y operativo en namespace stackrox.' if acs_sensor_check.resources | length > 0 else 'ACS Sensor no detectado en el cluster.' }}
+          {{ 'ACS Sensor detectado y operativo en namespace stackrox.' if acs_info | length > 0 else 'ACS Sensor no detectado.' }}
 
           ---------------------------------
           NETWORK POLICIES
@@ -202,16 +173,16 @@
 
           1. NAMESPACES CON NETWORK POLICIES DEFINIDAS
           ---------------------------------------------
-          {{ netpol_protegidos }}
+          {{ netpol_protegidos | indent(width=0) }}
 
           2. NAMESPACES SIN NETWORK POLICIES (EXPUESTOS)
           ---------------------------------------------
-          {{ netpol_expuestos }}
+          {{ netpol_expuestos | indent(width=0) }}
 
           ---------------------------------
           CONTAINER SECURITY OPERATOR
           Make sure the Container Security Operator is installed - ocp4-pci-dss-4-0-container-security-operator-exists
-          {{ 'Operador instalado - Versión: ' + cso_sub.resources[0].status.installedCSV if cso_sub.resources | length > 0 else 'Container Security Operator NO SE ENCUENTRA instalado.' }}
+          {{ 'Instalado: ' + cso_info[0].status.installedCSV if cso_info | length > 0 else 'CSO Operator NO instalado.' }}
 
           ---------------------------------
           OAUTH INACTIVITY TIMEOUT
@@ -223,44 +194,19 @@
 
           2. DETALLE DE CLIENTES (OAuthClients)
           ---------------------------------------------
-          {{ oauth_clients_detail }}
+          {{ oauth_clients_list | indent(width=0) }}
 
-    # =========================================================
-    # GUARDADO Y NOTIFICACIÓN
-    # =========================================================
-    - name: "Crear directorio de reportes"
-      file:
-        path: "{{ report_dir }}"
-        state: directory
-        mode: '0755'
-
-    - name: "Guardar reporte en archivo TXT"
-      copy:
-        dest: "{{ report_dir }}/{{ report_name }}.txt"
-        content: "{{ report_text }}"
-        mode: '0644'
-
-    - name: "Enviar reporte por correo electrónico"
-      community.general.mail:
-        host: "{{ smtp_host }}"
-        username: "{{ mail_from }}"
-        password: "{{ mail_password }}"
-        port: 587
-        to: "{{ mail_to }}"
-        subject: "Seguridad OpenShift Consolidado - {{ cluster_name }}"
-        body: "{{ report_text }}"
-        secure: starttls
-        charset: utf-8
-      when: send_mail | bool
-
-    - name: "Enviar reporte por webhook"
-      uri:
-        url: "{{ webhook_url }}"
-        method: POST
-        headers:
-          Content-Type: application/json
-        body:
-          cluster: "{{ cluster_name }}"
-          report: "{{ report_text }}"
-        body_format: json
-      when: send_webhook | bool
+    - name: "Guardar y Enviar Reporte"
+      block:
+        - file: { path: "{{ report_dir }}", state: directory }
+        - copy: { dest: "{{ report_dir }}/{{ report_name }}.txt", content: "{{ report_text }}" }
+        - community.general.mail:
+            host: "{{ smtp_host }}"
+            username: "{{ mail_from }}"
+            password: "{{ mail_password }}"
+            port: 587
+            to: "{{ mail_to }}"
+            subject: "Seguridad OpenShift Consolidado - {{ cluster_name }}"
+            body: "{{ report_text }}"
+            secure: starttls
+          when: send_mail | bool
