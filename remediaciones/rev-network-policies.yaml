@@ -1,0 +1,110 @@
+---
+- name: Compliance Auditing - Network Policies Detailed List
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    compliance_id: "ocp4-pci-dss-4-0-configure-network-policies-namespaces"
+    
+    # Exclusión de namespaces de sistema
+    system_ns_regex: "^(openshift.*|kube.*|default|stackrox)$"
+    
+    # Reporte y Notificación
+    report_dir: /tmp/compliance-reports
+    report_name: "network-policy-audit-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+    
+    send_mail: true
+    mail_to: jmunozag@redhat.com
+    mail_from: botkev838@gmail.com
+    mail_password: "qfni wfkv uxsw dyjf"
+    smtp_host: smtp.gmail.com
+
+  tasks:
+    - name: Obtener infraestructura del cluster
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: Infrastructure
+        name: cluster
+      register: infra_info
+
+    - name: Set cluster fact
+      set_fact:
+        cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('DESCONOCIDO') }}"
+
+    - name: Obtener todos los Namespaces
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+      register: all_namespaces
+
+    - name: Obtener todas las NetworkPolicies
+      kubernetes.core.k8s_info:
+        api_version: networking.k8s.io/v1
+        kind: NetworkPolicy
+      register: all_netpols
+
+    - name: Organizar datos para el reporte
+      set_fact:
+        # Filtrar solo namespaces de aplicación
+        target_namespaces: "{{ all_namespaces.resources | map(attribute='metadata.name') | reject('match', system_ns_regex) | list }}"
+        # Crear un diccionario de políticas por namespace para fácil acceso
+        netpol_map: "{{ all_netpols.resources | groupby('metadata.namespace') | map('set_attribute', '0', 'ns') | map('set_attribute', '1', 'policies') | list }}"
+
+    - name: Construir reporte detallado
+      set_fact:
+        report_text: |
+          AUDITORÍA DE POLÍTICAS DE RED POR NAMESPACE
+          =============================================
+          Control: {{ compliance_id }}
+          Cluster: {{ cluster_name }}
+          Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
+          
+          1. NAMESPACES CON NETWORK POLICIES DEFINIDAS
+          ---------------------------------------------
+          {% set found_any = false %}
+          {% for ns in target_namespaces | sort %}
+            {% set ns_policies = all_netpols.resources | selectattr('metadata.namespace', 'equalto', ns) | map(attribute='metadata.name') | list %}
+            {% if ns_policies | length > 0 %}
+          [PROTEGIDO] Namespace: {{ ns }}
+                      Políticas: {{ ns_policies | join(', ') }}
+            {% set found_any = true %}
+            {% endif %}
+          {% endfor %}
+          {% if not found_any %}
+          No se encontraron namespaces de aplicación con políticas.
+          {% endif %}
+
+          2. NAMESPACES SIN NETWORK POLICIES (EXPUSTOS)
+          ---------------------------------------------
+          {% set missing_any = false %}
+          {% for ns in target_namespaces | sort %}
+            {% set ns_policies = all_netpols.resources | selectattr('metadata.namespace', 'equalto', ns) | list %}
+            {% if ns_policies | length == 0 %}
+          [ALERTA] Namespace: {{ ns }}
+            {% set missing_any = true %}
+            {% endif %}
+          {% endfor %}
+          {% if not missing_any %}
+          Todos los namespaces de aplicación tienen al menos una política.
+          {% endif %}
+          =============================================
+
+    - name: Guardar reporte local
+      copy:
+        dest: "{{ report_dir }}/{{ report_name }}.txt"
+        content: "{{ report_text }}"
+        mode: '0644'
+
+    - name: Enviar reporte por correo
+      community.general.mail:
+        host: "{{ smtp_host }}"
+        port: 587
+        username: "{{ mail_from }}"
+        password: "{{ mail_password }}"
+        to: "{{ mail_to }}"
+        from: "{{ mail_from }}"
+        subject: "Auditoría Network Policies - {{ cluster_name }}"
+        body: "{{ report_text }}"
+        secure: starttls
+      when: send_mail | bool
