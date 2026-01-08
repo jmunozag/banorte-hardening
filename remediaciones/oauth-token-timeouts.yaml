@@ -1,12 +1,13 @@
 ---
-- name: Compliance OAuth - Inform & Enforce
+- name: "Compliance OAuth - Inform & Enforce (Filtro por Cliente)"
   hosts: localhost
   gather_facts: no
   connection: local
 
   vars:
-    # Variables de Survey
+    # Variables del Survey
     # compliance_mode: inform | enforce
+    # oauth_client: "nombre1, nombre2" (Dejar vacío para TODOS)
     compliance_id: "ocp4-pci-dss-4-0-oauth-or-oauthclient-inactivity-timeout"
     
     # Valores de Remediación
@@ -15,7 +16,7 @@
 
     # Configuración de Reporte
     report_dir: /tmp/compliance-reports
-    report_name: "oauth-enforce-audit-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+    report_name: "oauth-audit-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
     send_mail: true
     mail_to: jmunozag@redhat.com
     mail_from: botkev838@gmail.com
@@ -23,20 +24,17 @@
     smtp_host: smtp.gmail.com
 
   tasks:
-    - name: Obtener infraestructura del cluster
+    - name: "Obtener infraestructura del cluster"
       kubernetes.core.k8s_info:
         api_version: config.openshift.io/v1
         kind: Infrastructure
         name: cluster
       register: infra_info
 
-    - name: Set cluster fact
+    - name: "Set cluster fact"
       set_fact:
         cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('DESCONOCIDO') }}"
 
-    # =========================================================
-    # FASE 1: RECOLECCIÓN (INFORM) - Corregido con comillas
-    # =========================================================
     - name: "[INFORM] Obtener configuración global de OAuth"
       kubernetes.core.k8s_info:
         api_version: config.openshift.io/v1
@@ -44,16 +42,40 @@
         name: cluster
       register: oauth_global_info
 
-    - name: "[INFORM] Obtener todos los OAuthClients"
+    - name: "[INFORM] Obtener lista de OAuthClients"
       kubernetes.core.k8s_info:
         api_version: oauth.openshift.io/v1
         kind: OAuthClient
       register: oauth_clients_info
 
     # =========================================================
+    # LÓGICA DE FILTRADO (Soporta múltiples formatos de entrada)
+    # =========================================================
+    - name: "Procesar lista de clientes (oauth_client)"
+      set_fact:
+        target_client_list: >-
+          {{ 
+            oauth_client.replace('\n', ',').split(',') 
+            | map('trim') 
+            | reject('equalto', '') 
+            | list 
+          }}
+      when: oauth_client is defined and oauth_client | trim != ''
+
+    - name: "Determinar clientes finales para la acción"
+      set_fact:
+        clients_to_process: >-
+          {{
+            oauth_clients_info.resources 
+            | selectattr('metadata.name', 'in', target_client_list) 
+            | list if (oauth_client is defined and oauth_client | trim != '') 
+            else oauth_clients_info.resources | default([])
+          }}
+
+    # =========================================================
     # FASE 2: REMEDIACIÓN (ENFORCE)
     # =========================================================
-    - name: "[ENFORCE] Aplicar timeout global (10m0s)"
+    - name: "[ENFORCE] Parchear timeout global de OAuth"
       kubernetes.core.k8s:
         state: patched
         api_version: config.openshift.io/v1
@@ -65,7 +87,7 @@
               accessTokenInactivityTimeout: "{{ target_global_timeout }}"
       when: compliance_mode == 'enforce'
 
-    - name: "[ENFORCE] Aplicar timeout a OAuthClients (600s)"
+    - name: "[ENFORCE] Parchear timeouts en OAuthClients seleccionados"
       kubernetes.core.k8s:
         state: patched
         api_version: oauth.openshift.io/v1
@@ -73,81 +95,54 @@
         name: "{{ item.metadata.name }}"
         definition:
           accessTokenInactivityTimeoutSeconds: "{{ target_client_timeout_seconds }}"
-      loop: "{{ oauth_clients_info.resources | default([]) }}"
+      loop: "{{ clients_to_process }}"
       when: 
         - compliance_mode == 'enforce'
-        - oauth_clients_info.resources is defined
+        - clients_to_process | length > 0
 
     # =========================================================
-    # FASE 3: RE-VERIFICACIÓN PARA REPORTE
+    # RE-VERIFICACIÓN Y REPORTE
     # =========================================================
-    - name: "Obtener estado final tras ejecución"
-      kubernetes.core.k8s_info:
-        api_version: config.openshift.io/v1
-        kind: OAuth
-        name: cluster
-      register: oauth_global_final
-
-    - name: "Obtener OAuthClients finales"
+    - name: "Obtener estado final para el reporte"
       kubernetes.core.k8s_info:
         api_version: oauth.openshift.io/v1
         kind: OAuthClient
       register: oauth_clients_final
 
-    # =========================================================
-    # GENERACIÓN DEL REPORTE
-    # =========================================================
-    - name: "Construir reporte detallado"
+    - name: "Construir reporte de auditoría"
       set_fact:
         report_text: |
           REPORTE DE CUMPLIMIENTO OAUTH: {{ compliance_mode | upper }}
           =============================================
-          Control ID: {{ compliance_id }}
-          Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
           Cluster: {{ cluster_name }}
+          Modo: {{ compliance_mode }}
+          Filtro aplicado (oauth_client): {{ oauth_client if (oauth_client is defined and oauth_client != '') else 'TODOS' }}
           
           1. CONFIGURACIÓN GLOBAL (OAuth Server)
           ---------------------------------------------
-          Timeout Actual: {{ oauth_global_final.resources[0].spec.tokenConfig.accessTokenInactivityTimeout | default('NO CONFIGURADO') }}
-          Estado: {{ 'CUMPLE' if oauth_global_final.resources[0].spec.tokenConfig.accessTokenInactivityTimeout | default('') == target_global_timeout else 'FUERA DE ESTÁNDAR' }}
+          Timeout Actual: {{ oauth_global_info.resources[0].spec.tokenConfig.accessTokenInactivityTimeout | default('NO CONFIGURADO') }}
           
-          2. CONFIGURACIÓN DE CLIENTES (OAuthClients)
+          2. DETALLE DE CLIENTES (OAuthClients)
           ---------------------------------------------
-          {% if oauth_clients_final.resources | length == 0 %}
-          No se detectaron OAuthClients.
-          {% else %}
           {% for client in oauth_clients_final.resources | sort(attribute='metadata.name') %}
-          {% set client_val = client.accessTokenInactivityTimeoutSeconds | default(0) %}
+          {% set is_selected = (target_client_list is defined and client.metadata.name in target_client_list) or (oauth_client is not defined or oauth_client | trim == '') %}
           Cliente: {{ client.metadata.name }}
-          Timeout: {{ client_val }} s
-          Estado: {{ 'OK' if client_val == target_client_timeout_seconds else 'MODIFICADO' if compliance_mode == 'enforce' else 'PENDIENTE' }}
+          Timeout: {{ client.accessTokenInactivityTimeoutSeconds | default('N/A') }} s
+          ¿Fue modificado?: {{ 'SI' if is_selected and compliance_mode == 'enforce' else 'NO' }}
           ---------------------------------------------
           {% endfor %}
-          {% endif %}
-          
-          RESUMEN DE ACCIÓN:
-          {% if compliance_mode == 'enforce' %}
-          Se han aplicado parches de seguridad para forzar la expiración de tokens.
-          {% else %}
-          Modo INFORMATIVO: Se reporta el estado actual sin realizar modificaciones.
-          {% endif %}
           =============================================
 
-    - name: "Crear directorio y enviar reporte"
+    - name: "Generar y enviar archivos de reporte"
       block:
-        - name: "Crear directorio de reportes"
-          file:
-            path: "{{ report_dir }}"
-            state: directory
-            mode: '0755'
-
-        - name: "Guardar archivo de reporte"
+        - name: "Crear directorio"
+          file: { path: "{{ report_dir }}", state: directory, mode: '0755' }
+        - name: "Guardar TXT"
           copy:
             dest: "{{ report_dir }}/{{ report_name }}.txt"
             content: "{{ report_text }}"
             mode: '0644'
-
-        - name: "Enviar reporte por correo"
+        - name: "Enviar correo"
           community.general.mail:
             host: "{{ smtp_host }}"
             port: 587
@@ -155,7 +150,7 @@
             password: "{{ mail_password }}"
             to: "{{ mail_to }}"
             from: "{{ mail_from }}"
-            subject: "Compliance OAuth ({{ compliance_mode }}): {{ cluster_name }}"
+            subject: "Cumplimiento OAuth: {{ cluster_name }}"
             body: "{{ report_text }}"
             secure: starttls
           when: send_mail | bool
