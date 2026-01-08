@@ -6,11 +6,8 @@
 
   vars:
     compliance_id: "ocp4-pci-dss-4-0-configure-network-policies-namespaces"
-    
-    # Exclusión de namespaces de sistema
     system_ns_regex: "^(openshift.*|kube.*|default|stackrox)$"
     
-    # Reporte y Notificación
     report_dir: /tmp/compliance-reports
     report_name: "network-policy-audit-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
     
@@ -44,12 +41,9 @@
         kind: NetworkPolicy
       register: all_netpols
 
-    - name: Organizar datos para el reporte
+    - name: Filtrar namespaces de aplicación
       set_fact:
-        # Filtrar solo namespaces de aplicación
         target_namespaces: "{{ all_namespaces.resources | map(attribute='metadata.name') | reject('match', system_ns_regex) | list }}"
-        # Crear un diccionario de políticas por namespace para fácil acceso
-        netpol_map: "{{ all_netpols.resources | groupby('metadata.namespace') | map('set_attribute', '0', 'ns') | map('set_attribute', '1', 'policies') | list }}"
 
     - name: Construir reporte detallado
       set_fact:
@@ -62,33 +56,39 @@
           
           1. NAMESPACES CON NETWORK POLICIES DEFINIDAS
           ---------------------------------------------
-          {% set found_any = false %}
+          {% set found_any = [] %}
           {% for ns in target_namespaces | sort %}
             {% set ns_policies = all_netpols.resources | selectattr('metadata.namespace', 'equalto', ns) | map(attribute='metadata.name') | list %}
             {% if ns_policies | length > 0 %}
           [PROTEGIDO] Namespace: {{ ns }}
                       Políticas: {{ ns_policies | join(', ') }}
-            {% set found_any = true %}
+              {% do found_any.append(ns) %}
             {% endif %}
           {% endfor %}
-          {% if not found_any %}
+          {% if found_any | length == 0 %}
           No se encontraron namespaces de aplicación con políticas.
           {% endif %}
 
-          2. NAMESPACES SIN NETWORK POLICIES (EXPUSTOS)
+          2. NAMESPACES SIN NETWORK POLICIES (EXPUESTOS)
           ---------------------------------------------
-          {% set missing_any = false %}
+          {% set missing_any = [] %}
           {% for ns in target_namespaces | sort %}
             {% set ns_policies = all_netpols.resources | selectattr('metadata.namespace', 'equalto', ns) | list %}
             {% if ns_policies | length == 0 %}
           [ALERTA] Namespace: {{ ns }}
-            {% set missing_any = true %}
+              {% do missing_any.append(ns) %}
             {% endif %}
           {% endfor %}
-          {% if not missing_any %}
+          {% if missing_any | length == 0 %}
           Todos los namespaces de aplicación tienen al menos una política.
           {% endif %}
           =============================================
+
+    - name: Crear directorio de reportes
+      file:
+        path: "{{ report_dir }}"
+        state: directory
+        mode: '0755'
 
     - name: Guardar reporte local
       copy:
