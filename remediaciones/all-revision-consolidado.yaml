@@ -161,7 +161,7 @@
           {% endif %}
 
     # =========================================================
-    # ACS SENSOR (NUEVO)
+    # ACS SENSOR
     # =========================================================
     - name: Verificar ACS Sensor
       kubernetes.core.k8s_info:
@@ -181,7 +181,7 @@
           {% endif %}
 
     # =========================================================
-    # NETWORK POLICIES (NUEVO)
+    # NETWORK POLICIES (FORMATO INFORMATIVO DETALLADO)
     # =========================================================
     - name: Obtener Namespaces y NetworkPolicies
       kubernetes.core.k8s_info:
@@ -195,20 +195,23 @@
         kind: NetworkPolicy
       register: netpol_list
 
-    - name: Definir resultado Network Policies
+    - name: Definir resultado Network Policies (Detallado)
       set_fact:
         netpol_resultado: >-
           {% set target_ns = ns_list.resources | map(attribute='metadata.name') | reject('match', system_ns_regex) | list %}
-          {% set missing = [] %}
-          {% for ns in target_ns %}
-            {% set has_pol = netpol_list.resources | selectattr('metadata.namespace', 'equalto', ns) | list | length > 0 %}
-            {% if not has_pol %}{% set _ = missing.append(ns) %}{% endif %}
+          {% set report_lines = [] %}
+          {% for ns in target_ns | sort %}
+            {% set ns_policies = netpol_list.resources | selectattr('metadata.namespace', 'equalto', ns) | map(attribute='metadata.name') | list %}
+            {% if ns_policies | length > 0 %}
+              {% set _ = report_lines.append('[PROTEGIDO] Namespace: ' + ns + ' (Políticas: ' + ns_policies | join(', ') + ')') %}
+            {% else %}
+              {% set _ = report_lines.append('[ALERTA] Namespace: ' + ns + ' (Sin políticas definidas)') %}
+            {% endif %}
           {% endfor %}
-          Namespaces de aplicación evaluados: {{ target_ns | length }}. 
-          Namespaces sin política: {{ missing | length }} {{ '(' + missing | join(', ') + ')' if missing | length > 0 else '' }}
+          {{ report_lines | join('\n') }}
 
     # =========================================================
-    # CONTAINER SECURITY OPERATOR (NUEVO)
+    # CONTAINER SECURITY OPERATOR
     # =========================================================
     - name: Verificar CSO Operator
       kubernetes.core.k8s_info:
@@ -228,7 +231,7 @@
           {% endif %}
 
     # =========================================================
-    # OAUTH TIMEOUT (NUEVO)
+    # OAUTH TIMEOUT
     # =========================================================
     - name: Obtener OAuthClients
       kubernetes.core.k8s_info:
@@ -243,7 +246,7 @@
           Clientes OAuth detectados: {{ oauth_clients.resources | length }}
 
     # =========================================================
-    # REPORTE FINAL (FORMATO ORIGINAL MANTENIDO)
+    # REPORTE FINAL CONSOLIDADO
     # =========================================================
     - name: Construir reporte en texto
       set_fact:
