@@ -1,0 +1,152 @@
+---
+- name: Compliance OAuth - Inform & Enforce
+  hosts: localhost
+  gather_facts: no
+  connection: local
+
+  vars:
+    # MODO DE EJECUCIÓN (Viene del Survey)
+    # compliance_mode: inform | enforce
+    compliance_id: "ocp4-pci-dss-4-0-oauth-or-oauthclient-inactivity-timeout"
+    
+    # VALORES DE REMEDIACIÓN
+    target_global_timeout: "10m0s"
+    target_client_timeout_seconds: 600
+
+    # Reporte y Notificación
+    report_dir: /tmp/compliance-reports
+    report_name: "oauth-enforce-audit-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
+    send_mail: true
+    mail_to: jmunozag@redhat.com
+    mail_from: botkev838@gmail.com
+    mail_password: "qfni wfkv uxsw dyjf"
+    smtp_host: smtp.gmail.com
+
+  tasks:
+    - name: Obtener infraestructura del cluster
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: Infrastructure
+        name: cluster
+      register: infra_info
+
+    - name: Set cluster fact
+      set_fact:
+        cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('DESCONOCIDO') }}"
+
+    # =========================================================
+    # FASE 1: RECOLECCIÓN (INFORM)
+    # =========================================================
+    - name: [INFORM] Obtener configuración global de OAuth
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: OAuth
+        name: cluster
+      register: oauth_global_info
+
+    - name: [INFORM] Obtener todos los OAuthClients
+      kubernetes.core.k8s_info:
+        api_version: oauth.openshift.io/v1
+        kind: OAuthClient
+      register: oauth_clients_info
+
+    # =========================================================
+    # FASE 2: REMEDIACIÓN (ENFORCE)
+    # =========================================================
+    - name: "[ENFORCE] Aplicar timeout global (10m0s)"
+      kubernetes.core.k8s:
+        state: patched
+        api_version: config.openshift.io/v1
+        kind: OAuth
+        name: cluster
+        definition:
+          spec:
+            tokenConfig:
+              accessTokenInactivityTimeout: "{{ target_global_timeout }}"
+      when: compliance_mode == 'enforce'
+
+    - name: "[ENFORCE] Aplicar timeout a OAuthClients (600s)"
+      kubernetes.core.k8s:
+        state: patched
+        api_version: oauth.openshift.io/v1
+        kind: OAuthClient
+        name: "{{ item.metadata.name }}"
+        definition:
+          accessTokenInactivityTimeoutSeconds: "{{ target_client_timeout_seconds }}"
+      loop: "{{ oauth_clients_info.resources }}"
+      when: 
+        - compliance_mode == 'enforce'
+        - oauth_clients_info.resources | length > 0
+
+    # =========================================================
+    # FASE 3: RE-VERIFICACIÓN PARA REPORTE
+    # =========================================================
+    - name: Obtener estado final tras ejecución
+      kubernetes.core.k8s_info:
+        api_version: config.openshift.io/v1
+        kind: OAuth
+        name: cluster
+      register: oauth_global_final
+
+    - name: Obtener OAuthClients finales
+      kubernetes.core.k8s_info:
+        api_version: oauth.openshift.io/v1
+        kind: OAuthClient
+      register: oauth_clients_final
+
+    # =========================================================
+    # GENERACIÓN DEL REPORTE
+    # =========================================================
+    - name: Construir reporte detallado
+      set_fact:
+        report_text: |
+          REPORTE DE CUMPLIMIENTO OAUTH: {{ compliance_mode | upper }}
+          =============================================
+          Control ID: {{ compliance_id }}
+          Fecha: {{ lookup('pipe', 'date --iso-8601=seconds') }}
+          Cluster: {{ cluster_name }}
+          
+          1. CONFIGURACIÓN GLOBAL (OAuth Server)
+          ---------------------------------------------
+          Timeout Actual: {{ oauth_global_final.resources[0].spec.tokenConfig.accessTokenInactivityTimeout | default('NO CONFIGURADO') }}
+          Estado: {{ 'CUMPLE' if oauth_global_final.resources[0].spec.tokenConfig.accessTokenInactivityTimeout | default('') == target_global_timeout else 'FUERA DE ESTÁNDAR' }}
+          
+          2. CONFIGURACIÓN DE CLIENTES (OAuthClients)
+          ---------------------------------------------
+          {% if oauth_clients_final.resources | length == 0 %}
+          No se detectaron OAuthClients.
+          {% else %}
+          {% for client in oauth_clients_final.resources | sort(attribute='metadata.name') %}
+          Cliente: {{ client.metadata.name }}
+          Timeout: {{ client.metadata.accessTokenInactivityTimeoutSeconds | default('NO CONFIGURADO') }} s
+          Estado: {{ 'OK' if client.accessTokenInactivityTimeoutSeconds | default(0) == target_client_timeout_seconds else 'MODIFICADO' if compliance_mode == 'enforce' else 'PENDIENTE' }}
+          ---------------------------------------------
+          {% endfor %}
+          {% endif %}
+          
+          RESUMEN DE ACCIÓN:
+          {% if compliance_mode == 'enforce' %}
+          Se han aplicado parches de seguridad para forzar la expiración de tokens por inactividad.
+          {% else %}
+          Modo INFORMATIVO: Se reporta el estado actual sin realizar modificaciones.
+          {% endif %}
+          =============================================
+
+    - name: Guardar reporte y enviar correo
+      block:
+        - file: { path: "{{ report_dir }}", state: directory, mode: '0755' }
+        - copy:
+            dest: "{{ report_dir }}/{{ report_name }}.txt"
+            content: "{{ report_text }}"
+            mode: '0644'
+        - community.general.mail:
+            host: "{{ smtp_host }}"
+            port: 587
+            username: "{{ mail_from }}"
+            password: "{{ mail_password }}"
+            to: "{{ mail_to }}"
+            from: "{{ mail_from }}"
+            subject: "Compliance OAuth ({{ compliance_mode }}): {{ cluster_name }}"
+            body: "{{ report_text }}"
+            secure: starttls
+          when: send_mail | bool
