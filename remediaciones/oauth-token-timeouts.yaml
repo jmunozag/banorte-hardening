@@ -5,15 +5,15 @@
   connection: local
 
   vars:
-    # MODO DE EJECUCIÓN (Viene del Survey)
+    # Variables de Survey
     # compliance_mode: inform | enforce
     compliance_id: "ocp4-pci-dss-4-0-oauth-or-oauthclient-inactivity-timeout"
     
-    # VALORES DE REMEDIACIÓN
+    # Valores de Remediación
     target_global_timeout: "10m0s"
     target_client_timeout_seconds: 600
 
-    # Reporte y Notificación
+    # Configuración de Reporte
     report_dir: /tmp/compliance-reports
     report_name: "oauth-enforce-audit-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}"
     send_mail: true
@@ -35,16 +35,16 @@
         cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('DESCONOCIDO') }}"
 
     # =========================================================
-    # FASE 1: RECOLECCIÓN (INFORM)
+    # FASE 1: RECOLECCIÓN (INFORM) - Corregido con comillas
     # =========================================================
-    - name: [INFORM] Obtener configuración global de OAuth
+    - name: "[INFORM] Obtener configuración global de OAuth"
       kubernetes.core.k8s_info:
         api_version: config.openshift.io/v1
         kind: OAuth
         name: cluster
       register: oauth_global_info
 
-    - name: [INFORM] Obtener todos los OAuthClients
+    - name: "[INFORM] Obtener todos los OAuthClients"
       kubernetes.core.k8s_info:
         api_version: oauth.openshift.io/v1
         kind: OAuthClient
@@ -73,22 +73,22 @@
         name: "{{ item.metadata.name }}"
         definition:
           accessTokenInactivityTimeoutSeconds: "{{ target_client_timeout_seconds }}"
-      loop: "{{ oauth_clients_info.resources }}"
+      loop: "{{ oauth_clients_info.resources | default([]) }}"
       when: 
         - compliance_mode == 'enforce'
-        - oauth_clients_info.resources | length > 0
+        - oauth_clients_info.resources is defined
 
     # =========================================================
     # FASE 3: RE-VERIFICACIÓN PARA REPORTE
     # =========================================================
-    - name: Obtener estado final tras ejecución
+    - name: "Obtener estado final tras ejecución"
       kubernetes.core.k8s_info:
         api_version: config.openshift.io/v1
         kind: OAuth
         name: cluster
       register: oauth_global_final
 
-    - name: Obtener OAuthClients finales
+    - name: "Obtener OAuthClients finales"
       kubernetes.core.k8s_info:
         api_version: oauth.openshift.io/v1
         kind: OAuthClient
@@ -97,7 +97,7 @@
     # =========================================================
     # GENERACIÓN DEL REPORTE
     # =========================================================
-    - name: Construir reporte detallado
+    - name: "Construir reporte detallado"
       set_fact:
         report_text: |
           REPORTE DE CUMPLIMIENTO OAUTH: {{ compliance_mode | upper }}
@@ -117,29 +117,38 @@
           No se detectaron OAuthClients.
           {% else %}
           {% for client in oauth_clients_final.resources | sort(attribute='metadata.name') %}
+          {% set client_val = client.accessTokenInactivityTimeoutSeconds | default(0) %}
           Cliente: {{ client.metadata.name }}
-          Timeout: {{ client.metadata.accessTokenInactivityTimeoutSeconds | default('NO CONFIGURADO') }} s
-          Estado: {{ 'OK' if client.accessTokenInactivityTimeoutSeconds | default(0) == target_client_timeout_seconds else 'MODIFICADO' if compliance_mode == 'enforce' else 'PENDIENTE' }}
+          Timeout: {{ client_val }} s
+          Estado: {{ 'OK' if client_val == target_client_timeout_seconds else 'MODIFICADO' if compliance_mode == 'enforce' else 'PENDIENTE' }}
           ---------------------------------------------
           {% endfor %}
           {% endif %}
           
           RESUMEN DE ACCIÓN:
           {% if compliance_mode == 'enforce' %}
-          Se han aplicado parches de seguridad para forzar la expiración de tokens por inactividad.
+          Se han aplicado parches de seguridad para forzar la expiración de tokens.
           {% else %}
           Modo INFORMATIVO: Se reporta el estado actual sin realizar modificaciones.
           {% endif %}
           =============================================
 
-    - name: Guardar reporte y enviar correo
+    - name: "Crear directorio y enviar reporte"
       block:
-        - file: { path: "{{ report_dir }}", state: directory, mode: '0755' }
-        - copy:
+        - name: "Crear directorio de reportes"
+          file:
+            path: "{{ report_dir }}"
+            state: directory
+            mode: '0755'
+
+        - name: "Guardar archivo de reporte"
+          copy:
             dest: "{{ report_dir }}/{{ report_name }}.txt"
             content: "{{ report_text }}"
             mode: '0644'
-        - community.general.mail:
+
+        - name: "Enviar reporte por correo"
+          community.general.mail:
             host: "{{ smtp_host }}"
             port: 587
             username: "{{ mail_from }}"
