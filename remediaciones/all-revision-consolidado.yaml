@@ -19,28 +19,12 @@
     send_webhook: false
     webhook_url: https://webhook.empresa.cl/ocp/report
 
-    # REGEX PARA NETWORK POLICIES (Omitir sistema y operadores)
-    system_ns_regex: "^(openshift.*|kube.*|default|stackrox|.*operator.*|.*infra.*)$"
+    # REGEX PARA NETWORK POLICIES (Omitir sistema y operadores core)
+    system_ns_regex: "^(openshift.*|kube.*|default|stackrox)$"
 
   tasks:
     # =========================================================
-    # INICIALIZACIÓN
-    # =========================================================
-    - name: Inicializar variables
-      set_fact:
-        cluster_name: DESCONOCIDO
-        identity_providers: []
-        kubeadmin_resultado: ""
-        clf_resultado: ""
-        ingress_tls_resultado: ""
-        ldap_resultado: ""
-        acs_resultado: ""
-        netpol_resultado: ""
-        cso_resultado: ""
-        oauth_timeout_resultado: ""
-
-    # =========================================================
-    # NOMBRE DEL CLUSTER
+    # INICIALIZACIÓN Y RECOLECCIÓN
     # =========================================================
     - name: Obtener infraestructura del cluster
       kubernetes.core.k8s_info:
@@ -49,140 +33,19 @@
         name: cluster
       register: infra_info
 
-    - name: Definir nombre del cluster
-      set_fact:
-        cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('DESCONOCIDO') }}"
-
-    # =========================================================
-    # KUBEADMIN / OAUTH
-    # =========================================================
-    - name: Obtener secreto kubeadmin
-      kubernetes.core.k8s_info:
-        api_version: v1
-        kind: Secret
-        name: kubeadmin
-        namespace: kube-system
-      register: kubeadmin_info
-      failed_when: false
-
-    - name: Obtener configuración OAuth
+    - name: Obtener datos OAuth
       kubernetes.core.k8s_info:
         api_version: config.openshift.io/v1
         kind: OAuth
         name: cluster
       register: oauth_info
-      failed_when: false
 
-    - name: Extraer Identity Providers
-      set_fact:
-        identity_providers: "{{ oauth_info.resources[0].spec.identityProviders | default([]) }}"
-      when: oauth_info.resources is defined and oauth_info.resources | length > 0
-
-    - name: Definir resultado kubeadmin
-      set_fact:
-        kubeadmin_resultado: >-
-          {% set exists = kubeadmin_info.resources | default([]) | length > 0 %}
-          {% if not exists %}
-          El secreto kubeadmin NO EXISTE
-          {% elif identity_providers | length == 0 %}
-          El secreto kubeadmin EXISTE - IdentityProvider NO CONFIGURADO
-          {% else %}
-          El secreto kubeadmin EXISTE - IdentityProvider CONFIGURADO
-          {% endif %}
-
-    # =========================================================
-    # CLUSTER LOG FORWARDER
-    # =========================================================
-    - name: Obtener ClusterLogForwarder
+    - name: Obtener OAuthClients
       kubernetes.core.k8s_info:
-        api_version: logging.openshift.io/v1
-        kind: ClusterLogForwarder
-        namespace: openshift-logging
-      register: clf_info
-      failed_when: false
+        api_version: oauth.openshift.io/v1
+        kind: OAuthClient
+      register: oauth_clients
 
-    - name: Definir resultado CLF
-      set_fact:
-        clf_resultado: >-
-          {% if clf_info.resources | default([]) | length == 0 %}
-          La instancia ClusterLogForwarder (CLF) del Operador ClusterLogging NO EXISTE
-          {% else %}
-            {% set clf_name = clf_info.resources[0].metadata.name %}
-            {% set audit_configured = clf_info.resources[0].spec.inputs | default([]) | selectattr('type', 'equalto', 'audit') | list | length > 0 %}
-            {% if not audit_configured %}
-            La instancia ClusterLogForwarder existe - Nombre: {{ clf_name }} - SIN AUDIT LOGS
-            {% else %}
-            La instancia ClusterLogForwarder existe - Nombre: {{ clf_name }} - CON AUDIT LOGS
-            {% endif %}
-          {% endif %}
-
-    # =========================================================
-    # INGRESS CONTROLLER TLS
-    # =========================================================
-    - name: Obtener IngressController default
-      kubernetes.core.k8s_info:
-        api_version: operator.openshift.io/v1
-        kind: IngressController
-        name: default
-        namespace: openshift-ingress-operator
-      register: ingress_info
-      failed_when: false
-
-    - name: Definir resultado Ingress TLS
-      set_fact:
-        ingress_tls_resultado: >-
-          {% if ingress_info.resources is defined and ingress_info.resources | length > 0 %}
-            {% set tls_ciphers = ingress_info.resources[0].status.tlsProfile.ciphers | default([]) %}
-            {% if tls_ciphers | length == 0 %}
-            NO SE ENCUENTRAN CIPHERS TLS CONFIGURADOS EN ingresscontrollers/default
-            {% else %}
-            CIPHERS TLS CONFIGURADOS EN ingresscontrollers/default:
-            {% for cipher in tls_ciphers %}
-            - {{ cipher }}
-            {% endfor %}
-            {% endif %}
-          {% else %}
-          No se encontró ingresscontrollers/default
-          {% endif %}
-
-    # =========================================================
-    # LDAP IDENTITY PROVIDERS TLS
-    # =========================================================
-    - name: Definir resultado LDAP
-      set_fact:
-        ldap_resultado: >-
-          {% set ldap_idps = identity_providers | selectattr('type', 'equalto', 'LDAP') | list %}
-          {% if ldap_idps | length == 0 %}
-          Protocolo LDAP NO configurados como IdentityProvider en recurso OAuth
-          {% else %}
-          {% for idp in ldap_idps %}
-          LDAP Configurado - Nombre: {{ idp.name }} - insecure: {{ idp.ldap.insecure | default(false) }}
-          {% endfor %}
-          {% endif %}
-
-    # =========================================================
-    # ACS SENSOR
-    # =========================================================
-    - name: Verificar ACS Sensor
-      kubernetes.core.k8s_info:
-        api_version: apps/v1
-        kind: Deployment
-        name: sensor
-        namespace: stackrox
-      register: acs_sensor_check
-
-    - name: Definir resultado ACS
-      set_fact:
-        acs_resultado: >-
-          {% if acs_sensor_check.resources | length > 0 %}
-          ACS Sensor detectado y operativo en namespace stackrox.
-          {% else %}
-          ACS Sensor no detectado en el cluster.
-          {% endif %}
-
-    # =========================================================
-    # NETWORK POLICIES (FORMATO INFORMATIVO DETALLADO)
-    # =========================================================
     - name: Obtener Namespaces y NetworkPolicies
       kubernetes.core.k8s_info:
         api_version: v1
@@ -195,24 +58,29 @@
         kind: NetworkPolicy
       register: netpol_list
 
-    - name: Definir resultado Network Policies (Detallado)
-      set_fact:
-        netpol_resultado: >-
-          {% set target_ns = ns_list.resources | map(attribute='metadata.name') | reject('match', system_ns_regex) | list %}
-          {% set report_lines = [] %}
-          {% for ns in target_ns | sort %}
-            {% set ns_policies = netpol_list.resources | selectattr('metadata.namespace', 'equalto', ns) | map(attribute='metadata.name') | list %}
-            {% if ns_policies | length > 0 %}
-              {% set _ = report_lines.append('[PROTEGIDO] Namespace: ' + ns + ' (Políticas: ' + ns_policies | join(', ') + ')') %}
-            {% else %}
-              {% set _ = report_lines.append('[ALERTA] Namespace: ' + ns + ' (Sin políticas definidas)') %}
-            {% endif %}
-          {% endfor %}
-          {{ report_lines | join('\n') }}
+    - name: Obtener secreto kubeadmin
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: kubeadmin
+        namespace: kube-system
+      register: kubeadmin_info
 
-    # =========================================================
-    # CONTAINER SECURITY OPERATOR
-    # =========================================================
+    - name: Obtener ClusterLogForwarder
+      kubernetes.core.k8s_info:
+        api_version: logging.openshift.io/v1
+        kind: ClusterLogForwarder
+        namespace: openshift-logging
+      register: clf_info
+
+    - name: Verificar ACS Sensor
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: sensor
+        namespace: stackrox
+      register: acs_sensor_check
+
     - name: Verificar CSO Operator
       kubernetes.core.k8s_info:
         api_version: operators.coreos.com/v1alpha1
@@ -221,34 +89,61 @@
         namespace: openshift-operators
       register: cso_sub
 
-    - name: Definir resultado CSO
-      set_fact:
-        cso_resultado: >-
-          {% if cso_sub.resources | length > 0 %}
-          Operador instalado - Versión: {{ cso_sub.resources[0].status.installedCSV | default('Procesando') }}
-          {% else %}
-          Container Security Operator NO SE ENCUENTRA instalado.
-          {% endif %}
-
-    # =========================================================
-    # OAUTH TIMEOUT
-    # =========================================================
-    - name: Obtener OAuthClients
+    - name: Obtener IngressController default
       kubernetes.core.k8s_info:
-        api_version: oauth.openshift.io/v1
-        kind: OAuthClient
-      register: oauth_clients
+        api_version: operator.openshift.io/v1
+        kind: IngressController
+        name: default
+        namespace: openshift-ingress-operator
+      register: ingress_info
 
-    - name: Definir resultado OAuth
+    # =========================================================
+    # LÓGICA DE PROCESAMIENTO
+    # =========================================================
+    - name: Definir resultados base
       set_fact:
-        oauth_timeout_resultado: >-
-          Timeout Global: {{ oauth_info.resources[0].spec.tokenConfig.accessTokenInactivityTimeout | default('NO CONFIGURADO') }}
-          Clientes OAuth detectados: {{ oauth_clients.resources | length }}
+        cluster_name: "{{ infra_info.resources[0].status.infrastructureName | default('DESCONOCIDO') }}"
+        identity_providers: "{{ oauth_info.resources[0].spec.identityProviders | default([]) }}"
+        global_timeout: "{{ oauth_info.resources[0].spec.tokenConfig.accessTokenInactivityTimeout | default('NO CONFIGURADO') }}"
+
+    - name: Procesar Network Policies Detallado
+      set_fact:
+        netpol_protegidos: >-
+          {% set target_ns = ns_list.resources | map(attribute='metadata.name') | reject('match', system_ns_regex) | list %}
+          {% set lines = [] %}
+          {% for ns in target_ns | sort %}
+            {% set ns_pols = netpol_list.resources | selectattr('metadata.namespace', 'equalto', ns) | map(attribute='metadata.name') | list %}
+            {% if ns_pols | length > 0 %}
+              {% set _ = lines.append('   Namespace: ' + ns + ' (Políticas: ' + ns_pols | join(', ') + ')') %}
+            {% endif %}
+          {% endfor %}
+          {{ lines | join('\n') if lines | length > 0 else '   No se encontraron namespaces protegidos.' }}
+        netpol_expuestos: >-
+          {% set target_ns = ns_list.resources | map(attribute='metadata.name') | reject('match', system_ns_regex) | list %}
+          {% set lines = [] %}
+          {% for ns in target_ns | sort %}
+            {% set ns_pols = netpol_list.resources | selectattr('metadata.namespace', 'equalto', ns) | list %}
+            {% if ns_pols | length == 0 %}
+              {% set _ = lines.append('   Namespace: ' + ns) %}
+            {% endif %}
+          {% endfor %}
+          {{ lines | join('\n') if lines | length > 0 else '   Todos los namespaces de aplicación están protegidos.' }}
+
+    - name: Procesar Detalle OAuth Clients
+      set_fact:
+        oauth_clients_detail: >-
+          {% set lines = [] %}
+          {% for client in oauth_clients.resources | sort(attribute='metadata.name') %}
+            {% set c_name = client.metadata.name %}
+            {% set c_tout = client.accessTokenInactivityTimeoutSeconds | default('N/A') %}
+            {% set _ = lines.append('Cliente: ' + c_name + '\nTimeout: ' + c_tout | string + ' s\n---------------------------------------------') %}
+          {% endfor %}
+          {{ lines | join('\n') }}
 
     # =========================================================
-    # REPORTE FINAL CONSOLIDADO
+    # CONSTRUCCIÓN DEL REPORTE FINAL
     # =========================================================
-    - name: Construir reporte en texto
+    - name: Construir reporte final
       set_fact:
         report_text: |
           REPORTE DE SEGURIDAD OPENSHIFT
@@ -258,70 +153,86 @@
           ---------------------------------
           KUBEADMIN
           Ensure that the kubeadmin secret has been removed - ocp4-pci-dss-4-0-kubeadmin-removed
-          {{ kubeadmin_resultado }}
+          {% if kubeadmin_info.resources | length == 0 %}
+          El secreto kubeadmin NO EXISTE
+          {% elif identity_providers | length == 0 %}
+          El secreto kubeadmin EXISTE - IdentityProvider NO CONFIGURADO
+          {% else %}
+          El secreto kubeadmin EXISTE - IdentityProvider CONFIGURADO
+          {% endif %}
 
           ---------------------------------
           CLUSTER LOG FORWARDER
           Ensure that Audit Log Forwarding Is Enabled - ocp4-pci-dss-4-0-audit-log-forwarding-enabled
-          {{ clf_resultado }}
+          {% if clf_info.resources | length == 0 %}
+          La instancia ClusterLogForwarder (CLF) NO EXISTE
+          {% else %}
+          {% set audit_on = clf_info.resources[0].spec.inputs | default([]) | selectattr('type', 'equalto', 'audit') | list | length > 0 %}
+          Instancia: {{ clf_info.resources[0].metadata.name }} - {{ 'CON AUDIT LOGS' if audit_on else 'SIN AUDIT LOGS' }}
+          {% endif %}
 
           ---------------------------------
           INGRESS CONTROLLER TLS
           Ensure that the Ingress Controller only makes use of Strong - ocp4-pci-dss-4-0-ingress-controller-tls-cipher-suites
-          Listado de TLS configurados en ingresscontrollers/default
-          {{ ingress_tls_resultado }}
+          {% if ingress_info.resources | length > 0 %}
+          Ciphers en ingresscontrollers/default:
+          {{ ingress_info.resources[0].status.tlsProfile.ciphers | default(['NO CONFIGURADO']) | join('\n- ') }}
+          {% else %}
+          Ingress Controller default no encontrado.
+          {% endif %}
 
           ---------------------------------
           LDAP IDENTITY PROVIDERS TLS
           Only Use LDAP-based IdPs with TLS - ocp4-pci-dss-4-0-ocp-no-ldap-insecure
-          {{ ldap_resultado }}
+          {% set ldaps = identity_providers | selectattr('type', 'equalto', 'LDAP') | list %}
+          {% if ldaps | length == 0 %}
+          Protocolo LDAP NO configurado.
+          {% else %}
+          {% for idp in ldaps %}
+          LDAP: {{ idp.name }} - insecure: {{ idp.ldap.insecure | default(false) }}
+          {% endfor %}
+          {% endif %}
 
           ---------------------------------
           ACS SENSOR
           Ensure that Advanced Cluster Security (ACS) Sensor is deployed - ocp4-pci-dss-4-0-acs-sensor-exists
-          {{ acs_resultado }}
+          {{ 'ACS Sensor detectado y operativo en namespace stackrox.' if acs_sensor_check.resources | length > 0 else 'ACS Sensor no detectado.' }}
 
           ---------------------------------
           NETWORK POLICIES
           Ensure that application Namespaces have Network Policies defined - ocp4-pci-dss-4-0-configure-network-policies-namespaces
-          {{ netpol_resultado }}
+
+          1. NAMESPACES CON NETWORK POLICIES DEFINIDAS
+          ---------------------------------------------
+          {{ netpol_protegidos }}
+
+          2. NAMESPACES SIN NETWORK POLICIES (EXPUESTOS)
+          ---------------------------------------------
+          {{ netpol_expuestos }}
 
           ---------------------------------
           CONTAINER SECURITY OPERATOR
           Make sure the Container Security Operator is installed - ocp4-pci-dss-4-0-container-security-operator-exists
-          {{ cso_resultado }}
+          {{ 'Instalado: ' + cso_sub.resources[0].status.installedCSV if cso_sub.resources | length > 0 else 'CSO Operator NO instalado.' }}
 
           ---------------------------------
           OAUTH INACTIVITY TIMEOUT
           Configure OAuth tokens to expire after a set period of inactivity - ocp4-pci-dss-4-0-oauth-or-oauthclient-inactivity-timeout
-          {{ oauth_timeout_resultado }}
 
-    - name: Crear directorio y Guardar TXT
+          1. CONFIGURACIÓN GLOBAL (OAuth Server)
+          ---------------------------------------------
+          Timeout Actual: {{ global_timeout }}
+
+          2. DETALLE DE CLIENTES (OAuthClients)
+          ---------------------------------------------
+          {{ oauth_clients_detail }}
+
+    - name: Guardar y Enviar
       block:
         - file: { path: "{{ report_dir }}", state: directory }
         - copy: { dest: "{{ report_dir }}/{{ report_name }}.txt", content: "{{ report_text }}" }
-
-    # =========================================================
-    # ENVÍO
-    # =========================================================
-    - name: Enviar reporte por correo
-      community.general.mail:
-        host: "{{ smtp_host }}"
-        username: "{{ mail_from }}"
-        password: "{{ mail_password }}"
-        port: 587
-        to: "{{ mail_to }}"
-        from: "{{ mail_from }}"
-        subject: "Reporte Seguridad OpenShift - {{ cluster_name | trim }}"
-        body: "{{ report_text }}"
-        secure: starttls
-      when: send_mail
-
-    - name: Enviar reporte por webhook
-      uri:
-        url: "{{ webhook_url }}"
-        method: POST
-        headers: { Content-Type: application/json }
-        body: { cluster: "{{ cluster_name }}", report: "{{ report_text }}" }
-        body_format: json
-      when: send_webhook
+        - community.general.mail:
+            host: "{{ smtp_host }}"
+            username: "{{ mail_from }}"
+            password: "{{ mail_password }}"
+            port: 587
