@@ -1,5 +1,5 @@
 ---
-- name: Compliance Auditing - Network Policies Detailed List
+- name: Compliance Auditing - Network Policies Final Fix
   hosts: localhost
   gather_facts: no
   connection: local
@@ -56,32 +56,28 @@
           
           1. NAMESPACES CON NETWORK POLICIES DEFINIDAS
           ---------------------------------------------
-          {% set found_any = [] %}
+          {% set namespaces_with_np = [] %}
           {% for ns in target_namespaces | sort %}
             {% set ns_policies = all_netpols.resources | selectattr('metadata.namespace', 'equalto', ns) | map(attribute='metadata.name') | list %}
             {% if ns_policies | length > 0 %}
           [PROTEGIDO] Namespace: {{ ns }}
                       Políticas: {{ ns_policies | join(', ') }}
-              {% do found_any.append(ns) %}
             {% endif %}
           {% endfor %}
-          {% if found_any | length == 0 %}
-          No se encontraron namespaces de aplicación con políticas.
-          {% endif %}
 
           2. NAMESPACES SIN NETWORK POLICIES (EXPUESTOS)
           ---------------------------------------------
-          {% set missing_any = [] %}
+          {% set namespaces_without_np = [] %}
           {% for ns in target_namespaces | sort %}
             {% set ns_policies = all_netpols.resources | selectattr('metadata.namespace', 'equalto', ns) | list %}
             {% if ns_policies | length == 0 %}
           [ALERTA] Namespace: {{ ns }}
-              {% do missing_any.append(ns) %}
             {% endif %}
           {% endfor %}
-          {% if missing_any | length == 0 %}
-          Todos los namespaces de aplicación tienen al menos una política.
-          {% endif %}
+          
+          ---------------------------------------------
+          RESUMEN TÉCNICO:
+          - Total de namespaces evaluados: {{ target_namespaces | length }}
           =============================================
 
     - name: Crear directorio de reportes
