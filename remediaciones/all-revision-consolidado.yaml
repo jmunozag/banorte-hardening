@@ -190,7 +190,7 @@
             password: "{{ mail_password }}"
             port: 587
             to: "{{ mail_to }}"
-            subject: "Seguridad OpenShift Consolidado - {{ cluster_name }}"
+            subject: "Revisión de controles de seguridad PCI DSS / CIS - {{ cluster_name }}"
             body: "{{ report_text | replace('\\n', '\n') }}"
             secure: starttls
           when: send_mail | bool
