@@ -20,7 +20,7 @@
     webhook_url: https://webhook.empresa.cl/ocp/report
 
     # REGEX PARA NETWORK POLICIES (Omitir sistema y operadores)
-    system_ns_regex: "^(openshift.*|kube.*|default|stackrox|.*operator.*|.*infra.*|palo-alto)$"
+    system_ns_regex: "^(openshift.*|kube.*|default|stackrox|.*operator.*|.*infra.*)$"
 
   tasks:
     # =========================================================
